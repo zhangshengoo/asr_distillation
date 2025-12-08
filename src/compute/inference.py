@@ -1,5 +1,6 @@
-"""GPU inference workers with vLLM integration"""
+"""GPU inference workers with vLLM integration for Qwen3-Omni"""
 
+import os
 import time
 from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass
@@ -9,26 +10,68 @@ import torch
 import numpy as np
 from vllm import SamplingParams, AsyncLLMEngine
 from vllm.engine.arg_utils import AsyncEngineArgs
-from transformers import AutoProcessor, AutoTokenizer
+from transformers import Qwen3OmniMoeProcessor
 from loguru import logger
 
+# Set environment variables for Qwen3-Omni
+os.environ['VLLM_USE_V1'] = '0'
+os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
+os.environ["VLLM_LOGGING_LEVEL"] = "ERROR"
+
 from ..scheduling.pipeline import PipelineStage, DataBatch
+
+# Import Qwen3-Omni utilities
+try:
+    from qwen_omni_utils import process_mm_info
+except ImportError:
+    logger.warning("qwen_omni_utils not found, using fallback implementation")
+    
+    def process_mm_info(messages, use_audio_in_video=False):
+        """Fallback implementation for processing multimodal info"""
+        audios = None
+        images = None
+        videos = None
+        
+        for message in messages:
+            if isinstance(message.get('content'), list):
+                for content in message['content']:
+                    if content.get('type') == 'audio':
+                        if audios is None:
+                            audios = []
+                        audios.append(content['audio'])
+                    elif content.get('type') == 'image':
+                        if images is None:
+                            images = []
+                        images.append(content['image'])
+                    elif content.get('type') == 'video':
+                        if videos is None:
+                            videos = []
+                        videos.append(content['video'])
+        
+        return audios, images, videos
 
 
 @dataclass
 class InferenceConfig:
     """Inference configuration"""
-    model_name: str = "Qwen/Qwen2-Audio-7B-Instruct"
+    model_name: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
     tensor_parallel_size: int = 1
     max_num_batched_tokens: int = 8192
-    max_model_len: int = 8192
-    gpu_memory_utilization: float = 0.9
+    max_model_len: int = 32768
+    gpu_memory_utilization: float = 0.95
     trust_remote_code: bool = True
     dtype: str = "auto"
-    temperature: float = 0.0
-    max_tokens: int = 512
-    top_p: float = 0.9
+    temperature: float = 1e-2
+    max_tokens: int = 8192
+    top_p: float = 0.1
     repetition_penalty: float = 1.1
+    max_num_seqs: int = 1
+    limit_mm_per_prompt: Dict[str, int] = None
+    seed: int = 1234
+    
+    def __post_init__(self):
+        if self.limit_mm_per_prompt is None:
+            self.limit_mm_per_prompt = {'image': 1, 'video': 3, 'audio': 3}
 
 
 class AudioModelProcessor:
@@ -43,62 +86,80 @@ class AudioModelProcessor:
     def _load_processor(self) -> None:
         """Load model processor and tokenizer"""
         try:
-            self.processor = AutoProcessor.from_pretrained(
+            self.processor = Qwen3OmniMoeProcessor.from_pretrained(
                 self.config.model_name,
                 trust_remote_code=self.config.trust_remote_code
             )
             
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.config.model_name,
-                trust_remote_code=self.config.trust_remote_code
-            )
-            
-            # Set padding token if not present
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-                
-            logger.info(f"Loaded processor for {self.config.model_name}")
+            logger.info(f"Loaded Qwen3-Omni processor for {self.config.model_name}")
             
         except Exception as e:
-            logger.error(f"Error loading processor: {e}")
+            logger.error(f"Error loading Qwen3-Omni processor: {e}")
             raise
     
     def prepare_inputs(self, 
                       audio_features: torch.Tensor,
-                      prompt: str = "Transcribe the audio to text:") -> Dict[str, Any]:
-        """Prepare inputs for the model"""
+                      sample_rate: int,
+                      prompt: str = "请将这段语音转换为纯文本。") -> Dict[str, Any]:
+        """Prepare inputs for Qwen3-Omni model"""
         try:
-            # For Qwen2-Audio, we need to format the input properly
-            # This is a simplified example - actual implementation may vary
-            inputs = self.processor(
-                text=prompt,
-                audio=audio_features,
-                return_tensors="pt",
-                padding=True
+            # Convert audio tensor to the format expected by Qwen3-Omni
+            audio_data = {
+                'array': audio_features.numpy(),
+                'sampling_rate': sample_rate
+            }
+            
+            # Create messages in Qwen3-Omni format
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio", "audio": audio_data},
+                        {"type": "text", "text": prompt},
+                    ]
+                }
+            ]
+            
+            # Apply chat template
+            text = self.processor.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
             )
+            
+            # Process multimodal information
+            audios, images, videos = process_mm_info(messages, use_audio_in_video=False)
+            
+            # Prepare inputs for vLLM
+            inputs = {
+                'prompt': text, 
+                'multi_modal_data': {}, 
+                "mm_processor_kwargs": {"use_audio_in_video": False}
+            }
+            
+            if images is not None:
+                inputs['multi_modal_data']['image'] = images
+            if videos is not None:
+                inputs['multi_modal_data']['video'] = videos
+            if audios is not None:
+                inputs['multi_modal_data']['audio'] = audios
             
             return inputs
             
         except Exception as e:
-            logger.error(f"Error preparing inputs: {e}")
+            logger.error(f"Error preparing Qwen3-Omni inputs: {e}")
             raise
     
-    def decode_output(self, output_ids: torch.Tensor) -> str:
-        """Decode model output to text"""
+    def decode_output(self, output_text: str) -> str:
+        """Decode model output to text (Qwen3-Omni returns text directly)"""
         try:
-            # Decode generated tokens
-            decoded_text = self.tokenizer.decode(
-                output_ids[0], 
-                skip_special_tokens=True
-            )
+            # Qwen3-Omni returns text directly, no need to decode tokens
+            cleaned_text = output_text.strip()
             
-            # Clean up the output
-            decoded_text = decoded_text.strip()
-            
-            return decoded_text
+            return cleaned_text
             
         except Exception as e:
-            logger.error(f"Error decoding output: {e}")
+            logger.error(f"Error decoding Qwen3-Omni output: {e}")
             return ""
 
 
@@ -169,7 +230,7 @@ class AudioInferenceStage(PipelineStage):
         super().__init__(config)
         inference_config = InferenceConfig(**config.get('inference', {}))
         self.inference_engine = VLLMInferenceEngine(inference_config)
-        self.prompt_template = config.get('prompt_template', 'Transcribe the audio to text:')
+        self.prompt_template = config.get('prompt_template', '请将这段语音转换为纯文本。')
         
     def process(self, batch: DataBatch) -> DataBatch:
         """Process batch through inference"""
@@ -182,10 +243,12 @@ class AudioInferenceStage(PipelineStage):
                     continue
                     
                 audio_features = item['audio_features']
+                sample_rate = item['sample_rate']
                 
-                # Prepare inputs for model
+                # Prepare inputs for Qwen3-Omni model
                 inputs = self.inference_engine.model_processor.prepare_inputs(
                     audio_features,
+                    sample_rate,
                     self.prompt_template
                 )
                 
@@ -363,15 +426,5 @@ class PostProcessingStage(PipelineStage):
             
         # Basic cleaning
         cleaned = transcription.strip()
-        
-        # Remove common artifacts (customize as needed)
-        artifacts = [
-            "Transcribe the audio to text:",
-            "Here is the transcription:",
-            "The audio says:",
-        ]
-        
-        for artifact in artifacts:
-            cleaned = cleaned.replace(artifact, "")
         
         return cleaned.strip()

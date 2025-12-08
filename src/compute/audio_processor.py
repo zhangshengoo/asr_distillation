@@ -295,14 +295,14 @@ class AudioFeatureExtractor:
 
 
 class AudioFeatureStage(PipelineStage):
-    """Stage for extracting audio features"""
+    """Stage for preparing audio data for Qwen3-Omni model"""
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.feature_extractor = AudioFeatureExtractor(config.get('features', {}))
+        # Qwen3-Omni expects raw audio waveform, no feature extraction needed
         
     def process(self, batch: DataBatch) -> DataBatch:
-        """Extract features from preprocessed audio"""
+        """Prepare audio data for Qwen3-Omni model"""
         processed_items = []
         
         for item in batch.items:
@@ -312,26 +312,26 @@ class AudioFeatureStage(PipelineStage):
                     continue
                     
                 waveform = item['audio_tensor']['waveform']
+                sample_rate = item['audio_tensor']['sample_rate']
                 
-                # Extract features
-                features = self.feature_extractor.extract_features(waveform)
-                
-                # Update item with features
-                item['audio_features'] = features
-                item['feature_type'] = self.feature_extractor.feature_type
+                # For Qwen3-Omni, keep the raw audio waveform
+                # The model processor will handle the conversion
+                item['audio_features'] = waveform
+                item['sample_rate'] = sample_rate
+                item['feature_type'] = 'raw_waveform'
                 
                 processed_items.append(item)
                 
             except Exception as e:
-                logger.error(f"Error extracting features for {item['file_id']}: {e}")
+                logger.error(f"Error preparing audio for {item['file_id']}: {e}")
                 item['error'] = str(e)
                 processed_items.append(item)
         
-        # Create new batch with features
+        # Create new batch with prepared audio data
         new_batch = DataBatch(
             batch_id=batch.batch_id,
             items=processed_items,
-            metadata={**batch.metadata, 'stage': 'feature_extraction'}
+            metadata={**batch.metadata, 'stage': 'audio_preparation'}
         )
         
         return new_batch

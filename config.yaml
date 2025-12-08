@@ -45,18 +45,25 @@ audio:
     n_mels: 80
 
 inference:
-  model_name: "Qwen/Qwen2-Audio-7B-Instruct"
+  model_name: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
   tensor_parallel_size: 1
   max_num_batched_tokens: 8192
-  max_model_len: 8192
-  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  gpu_memory_utilization: 0.95
   trust_remote_code: true
   dtype: "auto"
-  temperature: 0.0
-  max_tokens: 512
-  top_p: 0.9
+  temperature: 0.01
+  max_tokens: 8192
+  top_p: 0.1
+  top_k: 1
   repetition_penalty: 1.1
-  prompt_template: "Transcribe the audio to text:"
+  max_num_seqs: 1
+  limit_mm_per_prompt:
+    image: 1
+    video: 3
+    audio: 3
+  seed: 1234
+  prompt_template: "请将这段语音转换为纯文本。"
 
 writer:
   batch_size: 1000
