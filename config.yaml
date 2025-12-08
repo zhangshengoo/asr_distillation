@@ -1,0 +1,97 @@
+# ASR Distillation Configuration
+
+data:
+  index_path: "./data/index"
+  cache_dir: "./data/cache"
+  cache_size_gb: 100.0
+  webdataset_output_dir: "./data/webdataset"
+  shard_size_mb: 100
+  
+  storage:
+    bucket: "your-bucket-name"
+    endpoint: "https://oss-cn-beijing.aliyuncs.com"  # 阿里云OSS endpoint
+    access_key_id: "your-access-key-id"
+    access_key_secret: "your-access-key-secret"
+    audio_prefix: "audio/"
+    result_prefix: "results/"
+
+pipeline:
+  num_cpu_workers: 10
+  num_gpu_workers: 1
+  batch_size: 32
+  max_concurrent_batches: 4
+  object_store_memory: 1073741824  # 1GB
+  checkpoint_interval: 1000
+  
+  cpu_worker_resources:
+    CPU: 1
+    
+  gpu_worker_resources:
+    CPU: 1
+    GPU: 1
+
+audio:
+  target_sample_rate: 16000
+  max_duration: 30.0
+  normalize: true
+  remove_silence: false
+  audio_format: "wav"
+  
+  features:
+    feature_type: "mel_spectrogram"
+    sample_rate: 16000
+    n_fft: 400
+    hop_length: 160
+    n_mels: 80
+
+inference:
+  model_name: "Qwen/Qwen2-Audio-7B-Instruct"
+  tensor_parallel_size: 1
+  max_num_batched_tokens: 8192
+  max_model_len: 8192
+  gpu_memory_utilization: 0.9
+  trust_remote_code: true
+  dtype: "auto"
+  temperature: 0.0
+  max_tokens: 512
+  top_p: 0.9
+  repetition_penalty: 1.1
+  prompt_template: "Transcribe the audio to text:"
+
+writer:
+  batch_size: 1000
+  flush_interval: 10.0
+  max_file_size_mb: 100
+  output_format: "jsonl"
+  compression: null
+  async_upload: true
+  retry_attempts: 3
+  retry_delay: 1.0
+
+monitoring:
+  enable_prometheus: true
+  prometheus_port: 8000
+  metrics_interval: 5.0
+  enable_gpu_monitoring: true
+  enable_ray_monitoring: true
+  checkpoint_interval: 1000
+  checkpoint_dir: "./checkpoints"
+  
+  alert_rules:
+    - name: "high_error_rate"
+      severity: "warning"
+      message: "High error rate detected"
+      condition:
+        type: "threshold"
+        metric: "stages.inference.success_rate"
+        threshold: 0.9
+        operator: "<"
+    
+    - name: "high_memory_usage"
+      severity: "critical"
+      message: "High memory usage"
+      condition:
+        type: "threshold"
+        metric: "system.memory_percent"
+        threshold: 90
+        operator: ">"
