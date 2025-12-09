@@ -82,11 +82,23 @@ asr_distillation/
   - 统一的模型接口和配置
 
 ### 3. 调度层 (src/scheduling/)
-- **DistributedPipeline**: Ray分布式流水线，支持零拷贝传输
+- **DistributedPipeline**: Ray分布式流水线核心实现
+  - 支持多阶段线性数据流处理
+  - 基于Ray Actor的Worker节点管理
+  - 零拷贝对象传输优化
+  - 轮询负载均衡策略
 - **PipelineOrchestrator**: 高级任务调度和管理
-  - 自动背压处理
-  - 动态资源调度
-  - 容错和恢复
+  - 多阶段流水线配置和编排
+  - CPU/GPU异构资源调度
+  - 自动背压和流量控制
+  - 断点续传和容错恢复
+- **核心调度特性**:
+  - **多阶段流水线**: 支持任意数量的顺序处理阶段，每个阶段可独立配置Worker数量
+  - **异构计算**: CPU和GPU工作节点独立管理，优化资源利用率
+  - **动态负载均衡**: 阶段内采用轮询分配，阶段间通过队列缓冲
+  - **容错机制**: Worker失败自动重试，错误信息传播和记录
+  - **资源隔离**: 基于Ray的资源调度确保CPU/GPU资源隔离
+  - **监控集成**: 实时统计各阶段处理时间和吞吐量
 
 ### 4. 存储层 (src/storage/)
 - **AsyncResultWriter**: 异步结果写入，支持批量聚合
@@ -480,3 +492,72 @@ data:
 - 华北3（张家口）：https://oss-cn-zhangjiakou.aliyuncs.com
 - 华南1（深圳）：https://oss-cn-shenzhen.aliyuncs.com
 - 西南1（成都）：https://oss-cn-chengdu.aliyuncs.com
+
+## 项目管理
+
+### 安装和设置
+```bash
+# 克隆仓库
+git clone https://github.com/zhangshengoo/asr_distillation.git
+cd asr_distillation
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 创建配置文件
+python main.py create-config --output config.yaml
+
+# 编辑配置文件
+vim config.yaml
+
+# 运行pipeline
+python main.py run --config config.yaml
+```
+
+### 使用增强型运行脚本
+```bash
+# 赋予执行权限
+chmod +x scripts/run.sh
+
+# 使用脚本运行
+./scripts/run.sh
+
+# 查看帮助
+./scripts/run.sh --help
+```
+
+### 开发环境设置
+```bash
+# 安装开发依赖
+pip install -e ".[dev]"
+
+# 运行代码格式化
+black src/ tests/
+isort src/ tests/
+
+# 运行类型检查
+mypy src/
+
+# 运行测试
+pytest tests/
+```
+
+### 项目结构说明
+- `main.py`: 主入口文件，定义CLI命令
+- `config.yaml`: 配置文件模板
+- `pyproject.toml`: 项目元数据和依赖配置
+- `requirements.txt`: Python依赖列表
+- `src/`: 源代码目录
+  - `compute/`: 计算层，包含音频处理和推理
+  - `data/`: 数据层，包含索引和存储
+  - `scheduling/`: 调度层，包含流水线管理
+  - `storage/`: 存储层，包含结果写入
+  - `monitoring/`: 监控层，包含系统监控
+  - `config/`: 配置管理
+- `scripts/`: 辅助脚本
+- `tests/`: 测试代码
+
+### 版本信息
+- 版本: 0.1.0
+- Python要求: >=3.9
+- 主要依赖版本见pyproject.toml

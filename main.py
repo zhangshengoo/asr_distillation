@@ -109,13 +109,46 @@ async def run_pipeline(config_path: str,
             'storage': config.data.storage
         }
         
-        # Setup complete pipeline
-        pipeline_orchestrator.setup_pipeline(
-            cpu_stage_class=AudioDownloadStage,
-            cpu_stage_config=cpu_stage_config,
-            gpu_stage_class=AudioInferenceStage,
-            gpu_stage_config=gpu_stage_config
-        )
+        # Setup multi-stage pipeline with all stages
+        stages_config = [
+            {
+                'type': 'cpu',
+                'class': AudioDownloadStage,
+                'name': 'audio_download',
+                'num_workers': 5,  # IO密集型，需要较多worker
+                'config': cpu_stage_config
+            },
+            {
+                'type': 'cpu',
+                'class': AudioPreprocessingStage,
+                'name': 'audio_preprocessing',
+                'num_workers': 10,  # CPU密集型
+                'config': cpu_stage_config
+            },
+            {
+                'type': 'cpu',
+                'class': AudioFeatureStage,
+                'name': 'feature_extraction',
+                'num_workers': 8,  # 中等CPU需求
+                'config': cpu_stage_config
+            },
+            {
+                'type': 'gpu',
+                'class': BatchInferenceStage,  # 使用批处理优化
+                'name': 'batch_inference',
+                'num_workers': 2,  # GPU密集型，少worker
+                'config': gpu_stage_config
+            },
+            {
+                'type': 'gpu',
+                'class': PostProcessingStage,
+                'name': 'post_processing',
+                'num_workers': 3,  # 轻量级处理
+                'config': gpu_stage_config
+            }
+        ]
+        
+        pipeline_orchestrator.setup_multi_stage_pipeline(stages_config)
         
         # Setup result writer
         result_writer = ResultWriterStage({

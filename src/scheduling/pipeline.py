@@ -126,13 +126,13 @@ class PipelineWorker:
 
 
 class DistributedPipeline:
-    """Distributed pipeline using Ray"""
+    """Distributed pipeline using Ray with multi-stage support"""
     
     def __init__(self, config: PipelineConfig):
         self.config = config
         self.producer = None
-        self.cpu_workers = []
-        self.gpu_workers = []
+        self.stage_workers = {}  # Dict: stage_name -> List[workers]
+        self.stage_queues = {}   # Dict: stage_name -> Queue
         self.result_queue = Queue()
         
         # Initialize Ray if not already initialized
@@ -152,44 +152,60 @@ class DistributedPipeline:
     
     def setup_cpu_workers(self, 
                          stage_class: type,
-                         stage_config: Dict[str, Any]) -> None:
-        """Setup CPU workers"""
+                         stage_config: Dict[str, Any],
+                         num_workers: Optional[int] = None,
+                         stage_name: str = "cpu_stage") -> None:
+        """Setup CPU workers for specific stage"""
+        if num_workers is None:
+            num_workers = self.config.num_cpu_workers
+            
         resources = self.config.cpu_worker_resources or {"CPU": 1}
+        workers = []
         
-        for i in range(self.config.num_cpu_workers):
+        for i in range(num_workers):
             worker = PipelineWorker.options(**resources).remote(
-                f"cpu_worker_{i}",
+                f"{stage_name}_worker_{i}",
                 stage_class,
                 stage_config
             )
-            self.cpu_workers.append(worker)
+            workers.append(worker)
             
-        logger.info(f"Setup {len(self.cpu_workers)} CPU workers")
+        self.stage_workers[stage_name] = workers
+        self.stage_queues[stage_name] = Queue()
+        logger.info(f"Setup {len(workers)} CPU workers for stage {stage_name}")
     
     def setup_gpu_workers(self,
                          stage_class: type, 
-                         stage_config: Dict[str, Any]) -> None:
-        """Setup GPU workers"""
+                         stage_config: Dict[str, Any],
+                         num_workers: Optional[int] = None,
+                         stage_name: str = "gpu_stage") -> None:
+        """Setup GPU workers for specific stage"""
+        if num_workers is None:
+            num_workers = self.config.num_gpu_workers
+            
         resources = self.config.gpu_worker_resources or {"CPU": 1, "GPU": 1}
+        workers = []
         
-        for i in range(self.config.num_gpu_workers):
+        for i in range(num_workers):
             worker = PipelineWorker.options(**resources).remote(
-                f"gpu_worker_{i}",
+                f"{stage_name}_worker_{i}",
                 stage_class,
                 stage_config
             )
-            self.gpu_workers.append(worker)
+            workers.append(worker)
             
-        logger.info(f"Setup {len(self.gpu_workers)} GPU workers")
+        self.stage_workers[stage_name] = workers
+        self.stage_queues[stage_name] = Queue()
+        logger.info(f"Setup {len(workers)} GPU workers for stage {stage_name}")
     
     def run_pipeline(self, 
                     max_batches: Optional[int] = None,
                     progress_callback: Optional[Callable] = None) -> List[DataBatch]:
-        """Run the distributed pipeline"""
+        """Run the distributed pipeline (legacy method)"""
         if not self.producer:
             raise ValueError("Producer not setup. Call setup_producer() first.")
             
-        if not self.cpu_workers and not self.gpu_workers:
+        if not self.stage_workers:
             raise ValueError("No workers setup. Call setup_cpu_workers() or setup_gpu_workers() first.")
         
         # Produce batches
@@ -203,11 +219,13 @@ class DistributedPipeline:
         
         # Process batches through pipeline stages
         results = []
-        available_workers = self.cpu_workers + self.gpu_workers
+        all_workers = []
+        for workers in self.stage_workers.values():
+            all_workers.extend(workers)
         
         for i, batch in enumerate(batches):
             # Select worker (round-robin)
-            worker = available_workers[i % len(available_workers)]
+            worker = all_workers[i % len(all_workers)]
             
             # Submit batch for processing
             result_future = worker.process_batch.remote(batch)
@@ -233,11 +251,90 @@ class DistributedPipeline:
         logger.info(f"Pipeline completed. Processed {len(processed_batches)} batches")
         return processed_batches
     
+    def run_multi_stage_pipeline(self, 
+                                stages_config: List[Dict[str, Any]],
+                                max_batches: Optional[int] = None,
+                                progress_callback: Optional[Callable] = None) -> List[DataBatch]:
+        """Run multi-stage pipeline with linear data flow"""
+        if not self.producer:
+            raise ValueError("Producer not setup. Call setup_producer() first.")
+            
+        if not self.stage_workers:
+            raise ValueError("No workers setup. Call setup_cpu_workers() or setup_gpu_workers() first.")
+        
+        if len(stages_config) < 1:
+            raise ValueError("At least one stage must be configured.")
+        
+        logger.info(f"Starting multi-stage pipeline with {len(stages_config)} stages")
+        
+        # Produce batches
+        batch_futures = self.producer.produce_batches.remote(max_batches)
+        batches = ray.get(batch_futures)
+        
+        if not batches:
+            logger.warning("No batches to process")
+            return []
+        
+        # Process batches through all stages sequentially
+        current_batches = batches
+        stage_names = [stage['name'] for stage in stages_config]
+        
+        for stage_idx, stage_config in enumerate(stages_config):
+            stage_name = stage_config['name']
+            workers = self.stage_workers.get(stage_name, [])
+            
+            if not workers:
+                logger.error(f"No workers found for stage {stage_name}")
+                continue
+            
+            logger.info(f"Processing stage {stage_idx + 1}/{len(stages_config)}: {stage_name}")
+            stage_start_time = time.time()
+            
+            # Process current batches through this stage
+            stage_results = []
+            for batch_idx, batch in enumerate(current_batches):
+                # Select worker (round-robin within stage)
+                worker = workers[batch_idx % len(workers)]
+                
+                # Submit batch for processing
+                result_future = worker.process_batch.remote(batch)
+                stage_results.append(result_future)
+            
+            # Wait for all batches in this stage to complete
+            current_batches = ray.get(stage_results)
+            
+            stage_duration = time.time() - stage_start_time
+            logger.info(f"Stage {stage_name} completed in {stage_duration:.2f}s")
+            
+            # Update progress callback
+            if progress_callback:
+                overall_progress = (stage_idx + 1) / len(stages_config) * 100
+                progress_callback(int(overall_progress), 100)
+        
+        # Mark processed files
+        processed_file_ids = []
+        for batch in current_batches:
+            if 'error' not in batch.metadata:
+                processed_file_ids.extend([item['file_id'] for item in batch.items])
+        
+        if processed_file_ids:
+            self.producer.mark_processed.remote(processed_file_ids)
+        
+        logger.info(f"Multi-stage pipeline completed. Processed {len(current_batches)} batches")
+        return current_batches
+    
     def get_pipeline_stats(self) -> Dict[str, Any]:
         """Get pipeline statistics"""
+        total_cpu_workers = sum(len(workers) for name, workers in self.stage_workers.items() 
+                               if 'cpu' in name.lower())
+        total_gpu_workers = sum(len(workers) for name, workers in self.stage_workers.items() 
+                               if 'gpu' in name.lower())
+        
         stats = {
-            'num_cpu_workers': len(self.cpu_workers),
-            'num_gpu_workers': len(self.gpu_workers),
+            'stages': list(self.stage_workers.keys()),
+            'num_cpu_workers': total_cpu_workers,
+            'num_gpu_workers': total_gpu_workers,
+            'total_workers': sum(len(workers) for workers in self.stage_workers.values()),
             'ray_cluster_resources': ray.cluster_resources(),
             'available_resources': ray.available_resources()
         }
@@ -251,39 +348,105 @@ class DistributedPipeline:
 
 
 class PipelineOrchestrator:
-    """High-level pipeline orchestrator"""
+    """High-level pipeline orchestrator with multi-stage support"""
     
     def __init__(self, config: Dict[str, Any]):
         self.pipeline_config = PipelineConfig(**config.get('pipeline', {}))
         self.pipeline = DistributedPipeline(self.pipeline_config)
         self.data_config = config['data']
+        self.stages_config = []
         
     def setup_pipeline(self, 
                       cpu_stage_class: type,
                       cpu_stage_config: Dict[str, Any],
                       gpu_stage_class: type,
                       gpu_stage_config: Dict[str, Any]) -> None:
-        """Setup complete pipeline"""
+        """Setup complete pipeline (legacy method for backward compatibility)"""
+        self.stages_config = [
+            {
+                'type': 'cpu',
+                'class': cpu_stage_class,
+                'config': cpu_stage_config,
+                'name': 'audio_preprocessing'
+            },
+            {
+                'type': 'gpu',
+                'class': gpu_stage_class,
+                'config': gpu_stage_config,
+                'name': 'inference'
+            }
+        ]
+        self._setup_stages()
+        
+    def setup_multi_stage_pipeline(self, stages_config: List[Dict[str, Any]]) -> None:
+        """Setup multi-stage pipeline with detailed stage configuration
+        
+        Args:
+            stages_config: List of stage configurations, each containing:
+                - type: 'cpu' or 'gpu'
+                - class: Stage class to instantiate
+                - config: Configuration dictionary for the stage
+                - name: Stage name for logging
+                - num_workers: Number of workers for this stage (optional)
+        """
+        self.stages_config = stages_config
+        self._setup_stages()
+        
+    def _setup_stages(self) -> None:
+        """Setup all pipeline stages"""
         # Setup producer
         self.pipeline.setup_producer(self.data_config)
         
-        # Setup CPU workers (audio preprocessing)
-        self.pipeline.setup_cpu_workers(cpu_stage_class, cpu_stage_config)
+        # Setup each stage
+        for stage_config in self.stages_config:
+            stage_type = stage_config['type']
+            stage_class = stage_config['class']
+            stage_params = stage_config['config']
+            stage_name = stage_config.get('name', f"{stage_type}_stage")
+            
+            # Determine number of workers for this stage
+            if 'num_workers' in stage_config:
+                num_workers = stage_config['num_workers']
+            else:
+                num_workers = (self.pipeline_config.num_cpu_workers 
+                              if stage_type == 'cpu' 
+                              else self.pipeline_config.num_gpu_workers)
+            
+            logger.info(f"Setting up {stage_name} with {num_workers} {stage_type} workers")
+            
+            if stage_type == 'cpu':
+                self.pipeline.setup_cpu_workers(
+                    stage_class, stage_params, num_workers=num_workers, stage_name=stage_name
+                )
+            elif stage_type == 'gpu':
+                self.pipeline.setup_gpu_workers(
+                    stage_class, stage_params, num_workers=num_workers, stage_name=stage_name
+                )
+            else:
+                raise ValueError(f"Unknown stage type: {stage_type}")
         
-        # Setup GPU workers (inference)
-        self.pipeline.setup_gpu_workers(gpu_stage_class, gpu_stage_config)
-        
-        logger.info("Pipeline setup complete")
+        logger.info(f"Multi-stage pipeline setup complete with {len(self.stages_config)} stages")
     
     def run(self, 
             max_batches: Optional[int] = None,
             progress_callback: Optional[Callable] = None) -> List[DataBatch]:
         """Run the complete pipeline"""
-        return self.pipeline.run_pipeline(max_batches, progress_callback)
+        return self.pipeline.run_multi_stage_pipeline(
+            self.stages_config, max_batches, progress_callback
+        )
     
     def get_stats(self) -> Dict[str, Any]:
         """Get pipeline statistics"""
-        return self.pipeline.get_pipeline_stats()
+        stats = self.pipeline.get_pipeline_stats()
+        stats['stages'] = [
+            {
+                'name': stage.get('name', f"{stage['type']}_stage"),
+                'type': stage['type'],
+                'class': stage['class'].__name__
+            }
+            for stage in self.stages_config
+        ]
+        return stats
     
     def cleanup(self) -> None:
         """Cleanup pipeline resources"""
