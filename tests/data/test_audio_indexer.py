@@ -27,7 +27,7 @@ class TestParquetIndexer:
         audio_files = [
             {
                 'file_id': 'test_1',
-                's3_path': 's3://bucket/test_1.wav',
+                'oss_path': 'oss://bucket/test_1.wav',
                 'duration': 5.0,
                 'sample_rate': 16000,
                 'size_bytes': 80000,
@@ -35,7 +35,7 @@ class TestParquetIndexer:
             },
             {
                 'file_id': 'test_2',
-                's3_path': 's3://bucket/test_2.wav',
+                'oss_path': 'oss://bucket/test_2.wav',
                 'duration': 3.0,
                 'sample_rate': 16000,
                 'size_bytes': 48000,

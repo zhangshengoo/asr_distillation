@@ -51,8 +51,14 @@ asr_distillation/
 │   │   └── system.py             # Prometheus监控
 │   └── config/               # 配置管理
 │       └── manager.py            # 配置管理器
-└── scripts/                 # 辅助脚本
-    └── run.sh               # 运行脚本
+├── scripts/                 # 辅助脚本
+│   └── run.sh               # 增强型运行脚本
+└── tests/                   # 测试目录
+    ├── compute/             # 计算层测试
+    ├── config/              # 配置管理测试
+    ├── data/                # 数据层测试
+    ├── conftest.py          # pytest配置
+    └── run_tests.py         # 测试运行脚本
 ```
 
 ## 核心组件
@@ -114,33 +120,56 @@ asr_distillation/
 ### 1. 创建配置文件
 ```bash
 python main.py create-config --output my_config.yaml
+# 或使用脚本
+./scripts/run.sh -a create-config -o my_config.yaml
 ```
 
 ### 2. 运行pipeline
 ```bash
 python main.py run --config my_config.yaml
+# 或使用脚本
+./scripts/run.sh -c my_config.yaml
 ```
 
 ### 3. 限制处理批次
 ```bash
 python main.py run --config my_config.yaml --max-batches 100
+# 或使用脚本
+./scripts/run.sh -c my_config.yaml -b 100
 ```
 
 ### 4. 指定日志级别
 ```bash
 python main.py run --config my_config.yaml --log-level DEBUG
+# 或使用脚本
+./scripts/run.sh -c my_config.yaml -l DEBUG
 ```
 
-### 5. 使用运行脚本
+### 5. 使用增强型运行脚本
 ```bash
+# 显示帮助信息
+./scripts/run.sh --help
+
 # 基本运行
 ./scripts/run.sh
 
-# 自定义配置和参数
-./scripts/run.sh -c my_config.yaml -b 100 -l DEBUG
+# 完整配置示例
+./scripts/run.sh -c production.yaml -b 1000 -l INFO
 
 # 创建配置文件
 ./scripts/run.sh -a create-config -o new_config.yaml
+```
+
+### 6. 运行测试
+```bash
+# 运行所有测试
+python tests/run_tests.py
+
+# 使用pytest直接运行
+pytest tests/
+
+# 运行特定测试
+pytest tests/compute/test_audio_processor.py
 ```
 
 ## 关键配置项
@@ -229,9 +258,10 @@ python main.py run --config my_config.yaml --log-level DEBUG
 
 ### 测试
 - 使用 pytest 进行单元测试
-- 测试文件位于 `src/tests/` 目录
+- 测试文件位于 `tests/` 目录，按模块组织
 - 支持异步测试 pytest-asyncio
 - 开发依赖包含完整的测试工具链
+- 使用 `tests/run_tests.py` 运行完整测试套件
 
 ### 添加新模型
 1. 在 `src/compute/model_examples/` 创建新模型文件
@@ -420,3 +450,33 @@ ray status
 - isort>=5.12.0
 - flake8>=6.0.0
 - mypy>=1.7.0
+
+## 阿里云OSS存储配置
+
+### OSS配置说明
+- 使用oss2库进行阿里云OSS操作
+- 支持OSS标准端点和自定义端点
+- 自动重试和错误处理
+- 优化的批量上传下载操作
+
+### 配置示例
+```yaml
+data:
+  storage:
+    # 阿里云OSS配置
+    bucket: "your-oss-bucket"
+    endpoint: "https://oss-cn-beijing.aliyuncs.com"
+    access_key_id: "your-oss-access-key-id"
+    access_key_secret: "your-oss-access-key-secret"
+    audio_prefix: "audio/"
+    result_prefix: "results/"
+```
+
+### OSS端点列表
+- 华东1（杭州）：https://oss-cn-hangzhou.aliyuncs.com
+- 华东2（上海）：https://oss-cn-shanghai.aliyuncs.com
+- 华北1（青岛）：https://oss-cn-qingdao.aliyuncs.com
+- 华北2（北京）：https://oss-cn-beijing.aliyuncs.com
+- 华北3（张家口）：https://oss-cn-zhangjiakou.aliyuncs.com
+- 华南1（深圳）：https://oss-cn-shenzhen.aliyuncs.com
+- 西南1（成都）：https://oss-cn-chengdu.aliyuncs.com

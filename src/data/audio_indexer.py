@@ -60,7 +60,7 @@ class ParquetIndexer(AudioIndexer):
         for file_info in audio_files:
             metadata = AudioMetadata(
                 file_id=file_info['file_id'],
-                s3_path=file_info['s3_path'], 
+                oss_path=file_info['oss_path'], 
                 duration=file_info['duration'],
                 sample_rate=file_info.get('sample_rate', 16000),
                 size_bytes=file_info.get('size_bytes', 0),
@@ -105,7 +105,7 @@ class WebDatasetBuilder:
                 # Create sample dictionary
                 sample = {
                     "__key__": row['file_id'],
-                    "s3_path": row['s3_path'],
+                    "oss_path": row['oss_path'],
                     "duration": row['duration'],
                     "sample_rate": row['sample_rate'],
                     "format": row['format']
