@@ -192,36 +192,55 @@ class AudioDownloadStage(PipelineStage):
             return self._process_audio_batch(batch)
     
     def _process_audio_batch(self, batch: DataBatch) -> DataBatch:
-        """Process audio-only batch (original logic)"""
+        """Process audio-only batch"""
         processed_items = []
         
         for item in batch.items:
             try:
                 file_id = item['file_id']
                 oss_path = item['oss_path']
+                audio_bytes = None  # 初始化为 None
+                tmp_file_path = None  # 追踪临时文件路径
                 
                 # Check cache first
                 cached_audio = self.data_loader.get_cached_audio(file_id)
                 if cached_audio and cached_audio.exists():
-                    with open(cached_audio, 'rb') as f:
-                        audio_bytes = f.read()
+                    try:
+                        with open(cached_audio, 'rb') as f:
+                            audio_bytes = f.read()
+                    except Exception as e:
+                        logger.error(f"Error reading cached audio for {file_id}: {e}")
+                        raise
                 else:
                     # Download from storage
-                    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                        success = self.storage_manager.download_audio(oss_path, tmp_file.name)
-                        if not success:
-                            raise ValueError(f"Failed to download {oss_path}")
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                            tmp_file_path = tmp_file.name
+                            success = self.storage_manager.download_audio(oss_path, tmp_file.name)
+                            if not success:
+                                raise ValueError(f"Failed to download {oss_path}")
                         
-                        with open(tmp_file.name, 'rb') as f:
+                        # 在 with 块外读取文件，确保文件已关闭
+                        with open(tmp_file_path, 'rb') as f:
                             audio_bytes = f.read()
                         
                         # Cache the downloaded audio
                         self.data_loader.cache_audio(file_id, audio_bytes)
                         
-                        os.unlink(tmp_file.name)
-                
-                # Add audio bytes to item
-                item['audio_bytes'] = audio_bytes
+                    finally:
+                        # 清理临时文件
+                        if tmp_file_path and os.path.exists(tmp_file_path):
+                            try:
+                                os.unlink(tmp_file_path)
+                            except Exception as e:
+                                logger.warning(f"Failed to delete temp file {tmp_file_path}: {e}")
+            
+                # 确保 audio_bytes 是 bytes 类型
+                if isinstance(audio_bytes, bytes):
+                    item['audio_bytes'] = audio_bytes
+                else:
+                    raise ValueError(f"Invalid audio data type for {file_id}: {type(audio_bytes)}")
+                    
                 processed_items.append(item)
                 
             except Exception as e:
@@ -251,36 +270,55 @@ class AudioDownloadStage(PipelineStage):
                 file_id = item['file_id']
                 oss_path = item['oss_path']
                 filename = item.get('filename', os.path.basename(oss_path))
+                file_bytes = None
+                tmp_file_path = None
                 
                 # Check cache first
                 cached_media = self.data_loader.get_cached_audio(file_id)
                 if cached_media and cached_media.exists():
-                    with open(cached_media, 'rb') as f:
-                        file_bytes = f.read()
+                    try:
+                        with open(cached_media, 'rb') as f:
+                            file_bytes = f.read()
+                    except Exception as e:
+                        logger.error(f"Error reading cached media for {file_id}: {e}")
+                        raise
                 else:
                     # Download from storage
-                    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                        success = self.storage_manager.download_audio(oss_path, tmp_file.name)
-                        if not success:
-                            raise ValueError(f"Failed to download {oss_path}")
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                            tmp_file_path = tmp_file.name
+                            success = self.storage_manager.download_audio(oss_path, tmp_file.name)
+                            if not success:
+                                raise ValueError(f"Failed to download {oss_path}")
                         
-                        with open(tmp_file.name, 'rb') as f:
+                        # 在 with 块外读取文件
+                        with open(tmp_file_path, 'rb') as f:
                             file_bytes = f.read()
                         
                         # Cache the downloaded media
                         self.data_loader.cache_audio(file_id, file_bytes)
                         
-                        os.unlink(tmp_file.name)
+                    finally:
+                        # 清理临时文件
+                        if tmp_file_path and os.path.exists(tmp_file_path):
+                            try:
+                                os.unlink(tmp_file_path)
+                            except Exception as e:
+                                logger.warning(f"Failed to delete temp file {tmp_file_path}: {e}")
                 
-                # Create media item
-                media_item = MediaItem(
-                    item_id=file_id,
-                    file_bytes=file_bytes,
-                    filename=filename,
-                    metadata=item.get('metadata', {})
-                )
-                media_items.append(media_item)
-                item_mapping[file_id] = item
+                # 确保 file_bytes 是 bytes 类型
+                if isinstance(file_bytes, bytes):
+                    # Create media item
+                    media_item = MediaItem(
+                        item_id=file_id,
+                        file_bytes=file_bytes,
+                        filename=filename,
+                        metadata=item.get('metadata', {})
+                    )
+                    media_items.append(media_item)
+                    item_mapping[file_id] = item
+                else:
+                    raise ValueError(f"Invalid media data type for {file_id}: {type(file_bytes)}")
                 
             except Exception as e:
                 logger.error(f"Error downloading media for {item['file_id']}: {e}")
