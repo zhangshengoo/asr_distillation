@@ -326,6 +326,11 @@ class BatchInferenceStage(PipelineStage):
                 for item, result in zip(batch_items, batch_results):
                     item['transcription'] = result
                     item['inference_timestamp'] = time.time()
+                    # 为segment级别的处理添加置信度（如果模型提供）
+                    if isinstance(result, dict) and 'confidence' in result:
+                        item['confidence'] = result['confidence']
+                    else:
+                        item['confidence'] = 0.0  # 默认值
                     processed_items.append(item)
                     
             except Exception as e:

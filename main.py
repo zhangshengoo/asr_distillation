@@ -18,6 +18,11 @@ from src.compute.audio_processor import (
     AudioPreprocessingStage,
     AudioFeatureStage
 )
+from src.compute.vad_stage import VADProcessingStage
+from src.compute.segment_processor import (
+    SegmentExpansionStage,
+    SegmentAggregationStage
+)
 from src.compute.inference import (
     AudioInferenceStage,
     BatchInferenceStage,
@@ -110,13 +115,20 @@ async def run_pipeline(config_path: str,
         }
         
         # Setup multi-stage pipeline with all stages
+        # Enable multimedia processing if configured
+        enable_multimedia = config.media is not None
+        
         stages_config = [
             {
                 'type': 'cpu',
                 'class': AudioDownloadStage,
                 'name': 'audio_download',
                 'num_workers': 5,  # IO密集型，需要较多worker
-                'config': cpu_stage_config
+                'config': {
+                    **cpu_stage_config,
+                    'enable_multimedia': enable_multimedia,
+                    'media': config.media.__dict__ if enable_multimedia else {}
+                }
             },
             {
                 'type': 'cpu',
@@ -124,6 +136,26 @@ async def run_pipeline(config_path: str,
                 'name': 'audio_preprocessing',
                 'num_workers': 10,  # CPU密集型
                 'config': cpu_stage_config
+            },
+            {
+                'type': 'cpu',
+                'class': VADProcessingStage,
+                'name': 'vad_processing',
+                'num_workers': config.vad.parallel_workers,
+                'config': {
+                    'vad': config.vad.__dict__,
+                    'batch_size': config.pipeline.batch_size
+                }
+            },
+            {
+                'type': 'cpu',
+                'class': SegmentExpansionStage,
+                'name': 'segment_expansion',
+                'num_workers': 4,  # 中等CPU需求
+                'config': {
+                    'min_segment_duration': 0.1,
+                    'preserve_order': True
+                }
             },
             {
                 'type': 'cpu',
@@ -138,6 +170,17 @@ async def run_pipeline(config_path: str,
                 'name': 'batch_inference',
                 'num_workers': 2,  # GPU密集型，少worker
                 'config': gpu_stage_config
+            },
+            {
+                'type': 'gpu',
+                'class': SegmentAggregationStage,
+                'name': 'segment_aggregation',
+                'num_workers': 2,  # 轻量级处理
+                'config': {
+                    'sort_by_timestamp': True,
+                    'include_segment_details': True,
+                    'calculate_file_stats': True
+                }
             },
             {
                 'type': 'gpu',
