@@ -2,21 +2,32 @@
 
 ## 项目概述
 
-这是一个基于大型多模态模型的ASR蒸馏框架，专为处理大规模音频数据设计。框架采用分布式流水线架构，使用Producer-Consumer模式实现高效的音频数据处理和转录。通过异构计算架构（CPU预处理+GPU推理）和零拷贝传输，最大化H200等高性能计算资源的利用率。
+这是一个基于大型多模态模型的ASR蒸馏框架，专为处理大规模音频和视频数据设计。框架采用分布式流水线架构，使用Producer-Consumer模式实现高效的媒体数据处理和转录。通过异构计算架构（CPU预处理+GPU推理）和零拷贝传输，最大化H200等高性能计算资源的利用率。框架支持多媒体处理，能够从视频文件中提取音频并进行ASR处理，同时集成了Silero VAD语音活动检测工具，提供更精确的语音识别能力。
+
+### 最新特性
+- **VAD处理阶段**: 新增独立的VAD处理流水线阶段，支持语音活动检测和音频切分
+- **音频片段处理**: 新增SegmentExpansionStage和SegmentAggregationStage，实现音频片段的展开和聚合
+- **增强型运行脚本**: 提供更便捷的命令行操作和参数配置
+- **多媒体索引器**: 支持音频和视频文件的统一索引管理
+- **Silero VAD集成**: 高精度语音活动检测工具，支持缓存和批量处理
+- **WebDataset支持**: 优化大规模数据集处理性能
+- **Parquet索引**: 提高大规模数据索引效率
 
 ### 核心技术栈
 - **Python 3.9+**
 - **Ray Core**: 分布式流水线调度，支持零拷贝对象传输
 - **vLLM**: GPU推理优化，支持连续批处理
 - **PyTorch & Torchaudio**: 音频处理和特征提取
-- **阿里云OSS**: 存储层，支持大规模音频数据
+- **FFmpeg**: 多媒体格式转换和音频提取
+- **阿里云OSS**: 存储层，支持大规模媒体数据
 - **Prometheus**: 监控系统和指标收集
 - **Typer**: 现代化CLI框架
 - **Loguru**: 结构化日志记录
 - **OmegaConf**: 配置管理
 - **WebDataset**: 大规模数据集处理
 - **Pydantic**: 数据验证和配置管理
-- **FFmpeg**: 音频处理
+- **Silero VAD**: 语音活动检测工具
+- **Parquet**: 大规模数据索引和存储格式
 
 ## 项目结构
 
@@ -34,11 +45,18 @@ asr_distillation/
 │   │   ├── __init__.py
 │   │   ├── audio_processor.py    # CPU音频预处理
 │   │   ├── inference.py          # GPU推理引擎
-│   │   └── model_examples/       # 模型示例代码
-│   │       └── qwen3_omni.py     # Qwen3-Omni模型示例
+│   │   ├── vad_stage.py          # VAD处理阶段
+│   │   ├── vad.py                # VAD处理器核心实现
+│   │   ├── segment_processor.py  # 音频片段处理
+│   │   └── media/                # 多媒体处理模块
+│   │       ├── __init__.py
+│   │       ├── media_detector.py     # 媒体格式检测器
+│   │       ├── media_extractor.py    # 媒体提取器
+│   │       └── batch_media_processor.py # 批量媒体处理器
 │   ├── data/                 # 数据层
 │   │   ├── __init__.py
 │   │   ├── audio_indexer.py      # 音频索引管理
+│   │   ├── media_indexer.py      # 多媒体索引管理
 │   │   └── storage.py            # OSS存储接口
 │   ├── scheduling/           # 调度层
 │   │   ├── __init__.py
@@ -51,28 +69,55 @@ asr_distillation/
 │   │   └── system.py             # Prometheus监控
 │   └── config/               # 配置管理
 │       └── manager.py            # 配置管理器
+├── examples/                 # 示例代码
+│   ├── model_examples/       # 模型示例代码
+│   │   └── qwen3_omni.py     # Qwen3-Omni模型示例
+│   └── tool_examples/        # 工具示例代码
+│       └── vad.py            # Silero VAD语音活动检测示例
 ├── scripts/                 # 辅助脚本
 │   └── run.sh               # 增强型运行脚本
-└── tests/                   # 测试目录
-    ├── compute/             # 计算层测试
-    ├── config/              # 配置管理测试
-    ├── data/                # 数据层测试
-    ├── conftest.py          # pytest配置
-    └── run_tests.py         # 测试运行脚本
+├── tests/                   # 测试目录
+│   ├── compute/             # 计算层测试
+│   │   ├── test_audio_processor.py
+│   │   ├── test_batch_inference.py
+│   │   ├── test_batch_media_processor.py
+│   │   ├── test_media_detector.py
+│   │   ├── test_media_extractor.py
+│   │   └── test_vad.py
+│   ├── config/              # 配置管理测试
+│   │   └── test_manager.py
+│   ├── data/                # 数据层测试
+│   │   └── test_audio_indexer.py
+│   ├── scheduling/          # 调度层测试
+│   │   └── test_pipeline.py
+│   ├── conftest.py          # pytest配置
+│   ├── run_tests.py         # 测试运行脚本
+│   └── README.md            # 测试说明文档
+├── __pycache__/             # Python缓存目录
+└── .git/                    # Git版本控制
 ```
 
 ## 核心组件
 
 ### 1. 数据层 (src/data/)
 - **AudioIndexer**: 支持Parquet格式的大规模音频索引，优化小文件IO
+- **MediaIndexer**: 多媒体文件索引管理，支持音频和视频文件的统一索引
 - **AudioStorageManager**: 阿里云OSS存储接口，支持批量上传下载
-- **AudioCache**: 本地NVMe SSD缓存管理，减少存储访问延迟
+- **MediaCache**: 本地NVMe SSD缓存管理，支持音频和视频文件缓存，减少存储访问延迟
+- **WebDatasetBuilder**: 构建WebDataset分片，优化大规模数据集处理
+- **MediaDataLoader**: 统一的多媒体数据加载接口，提供索引和缓存管理
 
 ### 2. 计算层 (src/compute/)
 - **AudioProcessor**: CPU音频预处理（下载、重采样、特征提取）
   - AudioDownloadStage: 音频下载和缓存
   - AudioPreprocessingStage: 音频预处理和格式转换
   - AudioFeatureStage: 特征提取
+- **VAD处理**: 语音活动检测和音频切分
+  - VADProcessingStage: VAD处理Ray Actor，支持批量处理
+  - VADProcessor: VAD核心处理器，集成Silero VAD模型
+- **Segment处理**: 音频片段展开和聚合
+  - SegmentExpansionStage: 将VAD结果展开为segment级别的items
+  - SegmentAggregationStage: 聚合处理后的音频片段
 - **Inference**: GPU推理引擎（vLLM集成）
   - AudioInferenceStage: 音频推理
   - BatchInferenceStage: 批量推理
@@ -80,6 +125,23 @@ asr_distillation/
 - **ASR Models**: Qwen3-Omni多模态模型实现
   - 支持模型注册和动态加载
   - 统一的模型接口和配置
+
+### 2.1 多媒体处理模块 (src/compute/media/)
+- **MediaDetector**: 媒体格式检测器
+  - 支持多种音频格式：mp3, wav, flac, aac, ogg, m4a, wma
+  - 支持多种视频格式：mp4, avi, mov, mkv, webm, flv, 3gp
+  - 基于文件签名和扩展名的双重检测机制
+  - 自动提取媒体元数据（时长、采样率、编码等）
+- **MediaExtractor**: 媒体提取器
+  - 使用FFmpeg进行音频提取和格式转换
+  - 支持从视频中提取音频轨道
+  - 可配置的音频质量设置（低/中/高）
+  - 异步处理支持，提高批量处理效率
+- **BatchMediaProcessor**: 批量媒体处理器
+  - 高效的批量处理机制，支持并行处理
+  - 内置LRU缓存系统，避免重复处理相同文件
+  - 自动处理大文件分块，支持最大500MB文件
+  - 详细的处理统计和错误报告
 
 ### 3. 调度层 (src/scheduling/)
 - **DistributedPipeline**: Ray分布式流水线核心实现
@@ -123,9 +185,29 @@ asr_distillation/
 - **DataConfig**: 数据层配置
 - **PipelineConfig**: 流水线配置
 - **AudioConfig**: 音频处理配置
+- **MediaConfig**: 多媒体处理配置
+- **VADConfig**: VAD处理配置
 - **InferenceConfig**: 推理配置
 - **WriteConfig**: 写入配置
 - **MonitoringConfig**: 监控配置
+
+## 流水线架构
+
+### 处理流程
+```
+[AudioDownload] → [AudioPreprocessing] → [VADProcessing] → [SegmentExpansion] → [AudioFeature] → [BatchInference] → [SegmentAggregation] → [PostProcessing] → [ResultWriter]
+```
+
+### 阶段说明
+1. **AudioDownloadStage**: 音频/视频文件下载和缓存
+2. **AudioPreprocessingStage**: 音频预处理和格式转换
+3. **VADProcessingStage**: 语音活动检测和音频切分
+4. **SegmentExpansionStage**: 将VAD结果展开为segment级别
+5. **AudioFeatureStage**: 音频特征提取
+6. **BatchInferenceStage**: 批量GPU推理
+7. **SegmentAggregationStage**: 聚合处理后的音频片段
+8. **PostProcessingStage**: 结果后处理
+9. **ResultWriterStage**: 异步结果写入
 
 ## 常用命令
 
@@ -182,6 +264,8 @@ pytest tests/
 
 # 运行特定测试
 pytest tests/compute/test_audio_processor.py
+pytest tests/compute/test_vad.py
+pytest tests/compute/test_batch_media_processor.py
 ```
 
 ## 关键配置项
@@ -221,6 +305,48 @@ pytest tests/compute/test_audio_processor.py
   - `n_fft`: FFT窗口大小
   - `hop_length`: 跳跃长度
   - `n_mels`: Mel滤波器数量
+
+### VAD配置
+- `vad.model_path`: VAD模型路径 (silero_vad.onnx)
+- `vad.sampling_rate`: 采样率 (16000)
+- `vad.threshold`: 检测阈值 (0.0-1.0)
+- `vad.min_speech_duration_ms`: 最小语音时长(毫秒)
+- `vad.min_silence_duration_ms`: 最小静音时长(毫秒)
+- `vad.speech_pad_ms`: 语音填充(毫秒)
+- `vad.batch_size`: VAD批处理大小
+- `vad.cache_enabled`: 是否启用VAD缓存
+- `vad.cache_dir`: VAD缓存目录
+- `vad.cache_max_size_gb`: VAD缓存最大大小(GB)
+- `vad.cache_ttl_hours`: 缓存生存时间(小时)
+- `vad.parallel_workers`: VAD并行工作进程数
+
+### 多媒体处理配置
+- `media.audio_formats`: 支持的音频格式列表
+  - 默认: ["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"]
+  - 可根据需求扩展其他格式
+- `media.video_formats`: 支持的视频格式列表
+  - 默认: ["mp4", "avi", "mov", "mkv", "webm", "flv", "3gp"]
+  - 可根据需求扩展其他格式
+- `media.ffmpeg.num_workers`: FFmpeg并行处理进程数
+  - 默认: 4，可根据CPU核心数调整
+  - 建议设置为CPU核心数的50-80%
+- `media.ffmpeg.timeout`: FFmpeg转换超时时间(秒)
+  - 默认: 300秒(5分钟)
+  - 对于大文件可适当增加
+- `media.ffmpeg.quality`: 音频转换质量
+  - 选项: "low"(64k), "medium"(128k), "high"(192k)
+  - 高质量会增加处理时间和文件大小
+- `media.cache.enable`: 是否启用媒体处理缓存
+  - 默认: true，建议启用以提高重复处理效率
+- `media.cache.max_size_gb`: 媒体缓存最大大小(GB)
+  - 默认: 50GB，可根据磁盘空间调整
+- `media.cache.ttl_hours`: 缓存生存时间(小时)
+  - 默认: 24小时，可根据需求调整
+- `media.chunk_size`: 大文件分块处理大小(字节)
+  - 默认: 1MB (1048576)
+  - 对于大文件可适当增加
+- `media.max_file_size_mb`: 最大处理文件大小(MB)
+  - 默认: 500MB，可根据内存和处理能力调整
 
 ### 推理配置
 - `inference.model_name`: 模型名称 (默认: Qwen/Qwen3-Omni-30B-A3B-Instruct)
@@ -276,10 +402,16 @@ pytest tests/compute/test_audio_processor.py
 - 使用 `tests/run_tests.py` 运行完整测试套件
 
 ### 添加新模型
-1. 在 `src/compute/model_examples/` 创建新模型文件
+1. 在 `examples/model_examples/` 创建新模型文件
 2. 参考现有的 `qwen3_omni.py` 实现模式
 3. 实现必要的方法：`_load_model_processor`, `run_model`
 4. 更新模型配置和依赖
+
+### 添加新工具
+1. 在 `examples/tool_examples/` 创建新工具文件
+2. 参考现有的 `vad.py` 实现模式
+3. 实现必要的工具接口和配置
+4. 更新相关依赖和文档
 
 ### 添加新的流水线阶段
 1. 在 `src/compute/` 创建新阶段文件
@@ -327,6 +459,7 @@ pytest tests/compute/test_audio_processor.py
 4. **vLLM启动失败**: 检查CUDA环境和GPU内存
 5. **Ray集群问题**: 检查网络配置和端口占用
 6. **Qwen3-Omni模型加载失败**: 确保设置了正确的环境变量和依赖
+7. **VAD处理失败**: 检查VAD模型文件和缓存目录权限
 
 ### 日志位置
 - 应用日志: `logs/asr_distillation_YYYY-MM-DD.log`
@@ -532,14 +665,19 @@ chmod +x scripts/run.sh
 pip install -e ".[dev]"
 
 # 运行代码格式化
-black src/ tests/
-isort src/ tests/
+black src/ tests/ examples/
+isort src/ tests/ examples/
 
 # 运行类型检查
 mypy src/
 
 # 运行测试
 pytest tests/
+
+# 运行特定测试
+pytest tests/compute/test_audio_processor.py
+pytest tests/compute/test_vad.py
+pytest tests/data/test_audio_indexer.py
 ```
 
 ### 项目结构说明
@@ -554,10 +692,26 @@ pytest tests/
   - `storage/`: 存储层，包含结果写入
   - `monitoring/`: 监控层，包含系统监控
   - `config/`: 配置管理
+- `examples/`: 示例代码目录
+  - `model_examples/`: 模型示例代码
+  - `tool_examples/`: 工具示例代码
 - `scripts/`: 辅助脚本
 - `tests/`: 测试代码
+  - `compute/`: 计算层测试
+  - `data/`: 数据层测试
+  - `scheduling/`: 调度层测试
+  - `config/`: 配置管理测试
 
 ### 版本信息
 - 版本: 0.1.0
 - Python要求: >=3.9
 - 主要依赖版本见pyproject.toml
+
+### 新增功能
+- **VAD处理阶段**: 集成Silero VAD语音活动检测，支持音频切分
+- **音频片段处理**: 新增SegmentExpansionStage和SegmentAggregationStage
+- **多媒体索引器**: 支持音频和视频文件的统一索引管理
+- **增强型运行脚本**: 提供更便捷的命令行操作
+- **WebDataset支持**: 优化大规模数据集处理性能
+- **Parquet索引**: 提高大规模数据索引效率
+- **完整测试套件**: 覆盖所有核心组件的单元测试
