@@ -103,6 +103,18 @@ inference:
   - vLLM集成
   - 批量推理优化
 
+计算层：异构流水线
+我们将计算节点划分为两个角色（Actor）：
+● A. Audio Pre-processing Actors (CPU Workers)
+  ○ 职责：从 OSS 拉取数据 -> FFmpeg/Torchaudio 解码 -> 重采样 (16k) -> 转换为 Tensor。
+  ○ 扩缩容：CPU 处理通常是瓶颈。H200 节点通常配备 100+ CPU 核心。我们需要启动大量的 CPU Actors（例如 1个 GPU 对应 10-15 个 CPU Workers）来保证喂得饱 GPU。
+● B. Inference Actors (GPU Workers with vLLM)
+  ○ 职责：接收 Audio Tensor -> 运行 Qwen2-Audio -> 生成文本。
+  ○ 引擎优化 (vLLM)：
+    ■ AsyncLLMEngine：使用 vLLM 的异步引擎，不使用 HTTP Server 模式，减少网络开销。
+    ■ Continuous Batching：这是关键。由于音频转换后的 Token 长度不一，vLLM 的 PagedAttention 可以完美解决 Padding 浪费问题。
+  ○ H200 策略：H200 显存极大（141GB）。如果模型较小（如 7B），推荐单卡运行多个 vLLM 实例（MP=1），或者单卡极大 Batch Size。如果模型较大，使用 Tensor Parallel (TP)。
+
 ### 4. 存储层 (`src/storage/`)
 
 - **AsyncResultWriter**: 异步结果写入
