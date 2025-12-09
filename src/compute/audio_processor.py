@@ -1,10 +1,11 @@
-"""CPU audio preprocessing workers"""
+"""CPU audio preprocessing workers with multimedia support"""
 
 import os
 import io
 import tempfile
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import torch
 import torchaudio
@@ -12,6 +13,18 @@ import numpy as np
 from loguru import logger
 
 from ..scheduling.pipeline import PipelineStage, DataBatch
+from .media import (
+    MediaDetector, 
+    MediaType, 
+    MediaConfig, 
+    MediaExtractor, 
+    BatchMediaProcessor, 
+    MediaItem, 
+    AudioData, 
+    CacheConfig, 
+    create_media_items_from_batch, 
+    update_batch_with_audio_data
+)
 
 
 @dataclass
@@ -126,15 +139,14 @@ class AudioPreprocessor:
             waveform = self.resample(waveform, sample_rate)
             sample_rate = self.config.target_sample_rate
             
-            # Trim silence
+            # Trim silence (optional)
             waveform = self.trim_silence(waveform, sample_rate)
             
             # Normalize
             waveform = self.normalize_audio(waveform)
             
-            # Truncate or pad
-            waveform = self.truncate_or_pad(waveform, sample_rate)
-            
+            # Return original length audio - no truncation or padding
+            # vLLM handles variable sequence lengths efficiently
             return waveform.squeeze(0), sample_rate  # Remove channel dimension
             
         except Exception as e:
@@ -143,18 +155,44 @@ class AudioPreprocessor:
 
 
 class AudioDownloadStage(PipelineStage):
-    """Stage for downloading audio from storage"""
+    """Stage for downloading audio and multimedia files from storage"""
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        from ..data.storage import AudioStorageManager
-        from ..data.audio_indexer import DataLoader
+        from ..data.storage import MediaStorageManager
+        from ..data.media_indexer import MediaDataLoader
         
-        self.storage_manager = AudioStorageManager(config['storage'])
-        self.data_loader = DataLoader(config)
+        self.storage_manager = MediaStorageManager(config['storage'])
+        self.data_loader = MediaDataLoader(config)
+        
+        # Initialize multimedia processing if enabled
+        self.enable_multimedia = config.get('enable_multimedia', False)
+        if self.enable_multimedia:
+            media_config = MediaConfig(**config.get('media', {}))
+            cache_config = CacheConfig(
+                enabled=config.get('media', {}).get('cache', {}).get('enable', True),
+                cache_dir=config.get('media', {}).get('cache', {}).get('cache_dir', './cache/media'),
+                max_size_gb=config.get('media', {}).get('cache', {}).get('max_size_gb', 50),
+                ttl_hours=config.get('media', {}).get('cache', {}).get('ttl_hours', 24)
+            )
+            
+            self.detector = MediaDetector()
+            self.extractor = MediaExtractor(media_config)
+            self.batch_processor = BatchMediaProcessor(media_config, cache_config)
         
     def process(self, batch: DataBatch) -> DataBatch:
-        """Download audio files for batch"""
+        """Download and process audio/multimedia files for batch"""
+        processed_items = []
+        
+        if self.enable_multimedia:
+            # Use multimedia processing pipeline
+            return self._process_multimedia_batch(batch)
+        else:
+            # Use original audio-only pipeline
+            return self._process_audio_batch(batch)
+    
+    def _process_audio_batch(self, batch: DataBatch) -> DataBatch:
+        """Process audio-only batch (original logic)"""
         processed_items = []
         
         for item in batch.items:
@@ -196,6 +234,88 @@ class AudioDownloadStage(PipelineStage):
             batch_id=batch.batch_id,
             items=processed_items,
             metadata={**batch.metadata, 'stage': 'audio_download'}
+        )
+        
+        return new_batch
+    
+    def _process_multimedia_batch(self, batch: DataBatch) -> DataBatch:
+        """Process multimedia batch with format conversion"""
+        processed_items = []
+        
+        # Create media items from batch
+        media_items = []
+        item_mapping = {}  # Map item_id to original item
+        
+        for item in batch.items:
+            try:
+                file_id = item['file_id']
+                oss_path = item['oss_path']
+                filename = item.get('filename', os.path.basename(oss_path))
+                
+                # Check cache first
+                cached_media = self.data_loader.get_cached_audio(file_id)
+                if cached_media and cached_media.exists():
+                    with open(cached_media, 'rb') as f:
+                        file_bytes = f.read()
+                else:
+                    # Download from storage
+                    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                        success = self.storage_manager.download_audio(oss_path, tmp_file.name)
+                        if not success:
+                            raise ValueError(f"Failed to download {oss_path}")
+                        
+                        with open(tmp_file.name, 'rb') as f:
+                            file_bytes = f.read()
+                        
+                        # Cache the downloaded media
+                        self.data_loader.cache_audio(file_id, file_bytes)
+                        
+                        os.unlink(tmp_file.name)
+                
+                # Create media item
+                media_item = MediaItem(
+                    item_id=file_id,
+                    file_bytes=file_bytes,
+                    filename=filename,
+                    metadata=item.get('metadata', {})
+                )
+                media_items.append(media_item)
+                item_mapping[file_id] = item
+                
+            except Exception as e:
+                logger.error(f"Error downloading media for {item['file_id']}: {e}")
+                item['error'] = str(e)
+                processed_items.append(item)
+        
+        # Process media items in batch
+        if media_items:
+            try:
+                audio_data_list = self.batch_processor.process_batch(media_items)
+                
+                # Update original items with processed audio data
+                for audio_data in audio_data_list:
+                    item_id = audio_data.item_id
+                    if item_id in item_mapping:
+                        original_item = item_mapping[item_id]
+                        original_item['audio_bytes'] = audio_data.audio_bytes
+                        original_item['audio_metadata'] = audio_data.metadata
+                        original_item['sample_rate'] = audio_data.sample_rate
+                        original_item['channels'] = audio_data.channels
+                        processed_items.append(original_item)
+                        
+            except Exception as e:
+                logger.error(f"Error processing batch media: {e}")
+                # Mark all items as failed
+                for item in batch.items:
+                    if 'error' not in item:
+                        item['error'] = str(e)
+                        processed_items.append(item)
+        
+        # Create new batch with processed multimedia
+        new_batch = DataBatch(
+            batch_id=batch.batch_id,
+            items=processed_items,
+            metadata={**batch.metadata, 'stage': 'multimedia_download'}
         )
         
         return new_batch

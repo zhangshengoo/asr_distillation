@@ -30,6 +30,29 @@ pipeline:
     CPU: 1
     GPU: 1
 
+# 多媒体处理配置
+media:
+  # 支持的音频格式
+  audio_formats: ["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"]
+  # 支持的视频格式
+  video_formats: ["mp4", "avi", "mov", "mkv", "webm", "flv", "3gp"]
+  
+  # FFmpeg配置
+  ffmpeg:
+    num_workers: 4  # 并行转换进程数
+    timeout: 300    # 转换超时时间(秒)
+    quality: "high" # 转换质量: low/medium/high
+  
+  # 缓存配置
+  cache:
+    enable: true
+    max_size_gb: 50
+    ttl_hours: 24
+  
+  # 性能设置
+  chunk_size: 1048576  # 1MB chunks for large files
+  max_file_size_mb: 500  # Maximum file size to process
+
 audio:
   target_sample_rate: 16000
   max_duration: 30.0
@@ -44,6 +67,21 @@ audio:
     hop_length: 160
     n_mels: 80
 
+# VAD语音活动检测配置
+vad:
+  model_path: "silero_vad.onnx"
+  sampling_rate: 16000
+  threshold: 0.4
+  min_speech_duration_ms: 1500
+  min_silence_duration_ms: 1000
+  speech_pad_ms: 100
+  batch_size: 32
+  cache_enabled: true
+  cache_dir: "./cache/vad"
+  cache_max_size_gb: 10.0
+  cache_ttl_hours: 24
+  parallel_workers: 8
+
 inference:
   model_name: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
   tensor_parallel_size: 1
@@ -55,7 +93,6 @@ inference:
   temperature: 0.01
   max_tokens: 8192
   top_p: 0.1
-  top_k: 1
   repetition_penalty: 1.1
   max_num_seqs: 1
   limit_mm_per_prompt:
@@ -63,7 +100,6 @@ inference:
     video: 3
     audio: 3
   seed: 1234
-  prompt_template: "请将这段语音转换为纯文本。"
 
 writer:
   batch_size: 1000
