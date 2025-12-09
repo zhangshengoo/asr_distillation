@@ -1,10 +1,9 @@
-"""Audio data indexing and caching management"""
+"""Media data indexing and caching management"""
 
 import os
 import json
-import pickle
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any, Tuple
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
@@ -38,24 +37,12 @@ class MediaMetadata:
     frame_rate: Optional[float] = None
 
 
-@dataclass
-class AudioMetadata:
-    """音频文件元数据（向后兼容）"""
-    file_id: str
-    oss_path: str
-    duration: float
-    sample_rate: int
-    size_bytes: int
-    format: str
-    checksum: Optional[str] = None
-
-
-class AudioIndexer(ABC):
-    """Abstract base class for audio indexing"""
+class MediaIndexer(ABC):
+    """Abstract base class for media indexing"""
     
     @abstractmethod
-    def create_index(self, audio_files: List[str]) -> pd.DataFrame:
-        """Create index from audio files"""
+    def create_index(self, media_files: List[str]) -> pd.DataFrame:
+        """Create index from media files"""
         pass
     
     @abstractmethod
@@ -69,25 +56,32 @@ class AudioIndexer(ABC):
         pass
 
 
-class ParquetIndexer(AudioIndexer):
-    """Parquet-based audio indexer for large-scale data"""
+class ParquetIndexer(MediaIndexer):
+    """Parquet-based media indexer for large-scale data"""
     
     def __init__(self, index_path: str):
         self.index_path = Path(index_path)
         self.index_path.mkdir(parents=True, exist_ok=True)
         
-    def create_index(self, audio_files: List[Dict[str, Any]]) -> pd.DataFrame:
-        """Create index from audio file metadata"""
+    def create_index(self, media_files: List[Dict[str, Any]]) -> pd.DataFrame:
+        """Create index from media file metadata"""
         metadata_list = []
         
-        for file_info in audio_files:
-            metadata = AudioMetadata(
+        for file_info in media_files:
+            metadata = MediaMetadata(
                 file_id=file_info['file_id'],
                 oss_path=file_info['oss_path'], 
+                media_type=file_info.get('media_type', 'audio'),
                 duration=file_info['duration'],
-                sample_rate=file_info.get('sample_rate', 16000),
                 size_bytes=file_info.get('size_bytes', 0),
-                format=file_info.get('format', 'wav')
+                format=file_info.get('format', 'wav'),
+                sample_rate=file_info.get('sample_rate'),
+                channels=file_info.get('channels'),
+                bitrate=file_info.get('bitrate'),
+                audio_codec=file_info.get('audio_codec'),
+                video_codec=file_info.get('video_codec'),
+                resolution=file_info.get('resolution'),
+                frame_rate=file_info.get('frame_rate')
             )
             metadata_list.append(metadata.__dict__)
             
@@ -97,42 +91,58 @@ class ParquetIndexer(AudioIndexer):
     
     def load_index(self) -> pd.DataFrame:
         """Load index from parquet file"""
-        index_file = self.index_path / "audio_index.parquet"
+        index_file = self.index_path / "media_index.parquet"
         if index_file.exists():
             return pd.read_parquet(index_file)
         return pd.DataFrame()
     
     def save_index(self, df: pd.DataFrame) -> None:
         """Save index to parquet file"""
-        index_file = self.index_path / "audio_index.parquet"
+        index_file = self.index_path / "media_index.parquet"
         df.to_parquet(index_file, index=False)
-        logger.info(f"Saved {len(df)} audio records to {index_file}")
+        logger.info(f"Saved {len(df)} media records to {index_file}")
 
 
 class WebDatasetBuilder:
-    """Build WebDataset shards from audio files"""
+    """Build WebDataset shards from media files"""
     
     def __init__(self, shard_size: int = 100 * 1024 * 1024):  # 100MB
         self.shard_size = shard_size
         
     def create_shards(self, 
-                     audio_df: pd.DataFrame, 
+                     media_df: pd.DataFrame, 
                      output_dir: str,
                      pattern: str = "data-%06d.tar") -> None:
-        """Create WebDataset shards from indexed audio files"""
+        """Create WebDataset shards from indexed media files"""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
         with wds.ShardWriter(str(output_path / pattern), maxcount=1000) as shard_writer:
-            for _, row in audio_df.iterrows():
+            for _, row in media_df.iterrows():
                 # Create sample dictionary
                 sample = {
                     "__key__": row['file_id'],
                     "oss_path": row['oss_path'],
+                    "media_type": row['media_type'],
                     "duration": row['duration'],
-                    "sample_rate": row['sample_rate'],
                     "format": row['format']
                 }
+                
+                # Add audio-specific fields if available
+                if pd.notna(row.get('sample_rate')):
+                    sample['sample_rate'] = row['sample_rate']
+                if pd.notna(row.get('channels')):
+                    sample['channels'] = row['channels']
+                if pd.notna(row.get('audio_codec')):
+                    sample['audio_codec'] = row['audio_codec']
+                
+                # Add video-specific fields if available
+                if pd.notna(row.get('video_codec')):
+                    sample['video_codec'] = row['video_codec']
+                if pd.notna(row.get('resolution')):
+                    sample['resolution'] = row['resolution']
+                if pd.notna(row.get('frame_rate')):
+                    sample['frame_rate'] = row['frame_rate']
                 
                 shard_writer.write(sample)
                 
@@ -195,20 +205,26 @@ class MediaCache:
                     
             logger.info(f"Evicted cache files, new size: {current_size / 1024 / 1024:.1f} MB")
     
-    def get(self, file_id: str) -> Optional[Path]:
+    def get(self, file_id: str, media_type: str = 'audio') -> Optional[Path]:
         """Get cached file path"""
-        cache_file = self.cache_dir / f"{file_id}.wav"
+        # Determine file extension based on media type
+        extension = 'wav' if media_type == 'audio' else 'mp4'
+        cache_file = self.cache_dir / f"{file_id}.{extension}"
+        
         if cache_file.exists():
             # Update access time
             cache_file.touch()
             return cache_file
         return None
     
-    def put(self, file_id: str, data: bytes) -> Path:
+    def put(self, file_id: str, data: bytes, media_type: str = 'audio') -> Path:
         """Cache file data"""
         self._evict_if_needed()
         
-        cache_file = self.cache_dir / f"{file_id}.wav"
+        # Determine file extension based on media type
+        extension = 'wav' if media_type == 'audio' else 'mp4'
+        cache_file = self.cache_dir / f"{file_id}.{extension}"
+        
         with open(cache_file, 'wb') as f:
             f.write(data)
             
@@ -217,6 +233,7 @@ class MediaCache:
         index[file_id] = {
             'path': str(cache_file),
             'size': len(data),
+            'media_type': media_type,
             'timestamp': pd.Timestamp.now()
         }
         self._save_cache_index(index)
@@ -250,25 +267,17 @@ class MediaDataLoader:
         """加载多媒体索引"""
         return self.indexer.load_index()
     
-    def create_index(self, media_files: List[str]) -> pd.DataFrame:
+    def create_index(self, media_files: List[Dict[str, Any]]) -> pd.DataFrame:
         """创建多媒体索引"""
         return self.indexer.create_index(media_files)
     
-    def get_cached_audio(self, file_id: str) -> Optional[Path]:
-        """获取缓存的音频文件（向后兼容）"""
-        return self.cache.get(file_id)
-    
-    def get_cached_media(self, file_id: str) -> Optional[Path]:
+    def get_cached_media(self, file_id: str, media_type: str = 'audio') -> Optional[Path]:
         """获取缓存的多媒体文件"""
-        return self.cache.get(file_id)
+        return self.cache.get(file_id, media_type)
     
-    def cache_audio(self, file_id: str, audio_data: bytes) -> Path:
-        """缓存音频数据（向后兼容）"""
-        return self.cache.put(file_id, audio_data)
-    
-    def cache_media(self, file_id: str, media_data: bytes) -> Path:
+    def cache_media(self, file_id: str, media_data: bytes, media_type: str = 'audio') -> Path:
         """缓存多媒体数据"""
-        return self.cache.put(file_id, media_data)
+        return self.cache.put(file_id, media_data, media_type)
     
     def clear_cache(self) -> None:
         """清空缓存"""
@@ -286,7 +295,23 @@ class MediaDataLoader:
             'max_size_gb': self.cache_size_gb,
             'utilization': total_size / self.cache.max_size_bytes
         }
+    
+    def filter_by_media_type(self, media_type: str) -> pd.DataFrame:
+        """根据媒体类型过滤索引"""
+        df = self.load_index()
+        if df.empty:
+            return df
+        
+        return df[df['media_type'] == media_type]
+    
+    def get_audio_files(self) -> pd.DataFrame:
+        """获取所有音频文件索引"""
+        return self.filter_by_media_type('audio')
+    
+    def get_video_files(self) -> pd.DataFrame:
+        """获取所有视频文件索引"""
+        return self.filter_by_media_type('video')
 
 
 # 向后兼容的别名
-DataLoader = MediaDataLoader  # 保持向后兼容性
+DataLoader = MediaDataLoader

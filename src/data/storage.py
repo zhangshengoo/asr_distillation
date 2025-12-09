@@ -74,8 +74,8 @@ class OSSClient:
             return False
 
 
-class AudioStorageManager:
-    """音频存储管理器 - OSS专用"""
+class MediaStorageManager:
+    """多媒体存储管理器 - OSS专用"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -86,6 +86,7 @@ class AudioStorageManager:
             bucket_name=config['bucket']
         )
         self.audio_prefix = config.get('audio_prefix', 'audio/')
+        self.video_prefix = config.get('video_prefix', 'video/')
         self.result_prefix = config.get('result_prefix', 'results/')
     
     def parse_oss_path(self, oss_path: str) -> str:
@@ -95,35 +96,49 @@ class AudioStorageManager:
             raise ValueError(f"无效的OSS路径: {oss_path}")
         return parsed.path.lstrip('/')
     
-    def list_audio_files(self, 
-                        prefix: Optional[str] = None,
-                        file_extensions: List[str] = ['.wav', '.mp3', '.flac']) -> List[Dict[str, Any]]:
-        """列出存储中的音频文件"""
+    def list_media_files(self, 
+                         prefix: Optional[str] = None,
+                         file_extensions: List[str] = ['.wav', '.mp3', '.flac', '.mp4', '.avi', '.mov']) -> List[Dict[str, Any]]:
+        """列出存储中的多媒体文件"""
         prefix = prefix or self.audio_prefix
         objects = self.oss_client.list_objects(prefix)
         
-        audio_files = []
+        media_files = []
         for obj in objects:
             key = obj.key
             if any(key.lower().endswith(ext) for ext in file_extensions):
                 oss_path = f"oss://{self.oss_client.bucket.bucket_name}/{key}"
                 file_id = Path(key).stem
                 
-                audio_files.append({
+                # 确定媒体类型
+                media_type = 'audio' if any(key.lower().endswith(ext) for ext in ['.wav', '.mp3', '.flac', '.aac', '.ogg', '.m4a']) else 'video'
+                
+                media_files.append({
                     'file_id': file_id,
                     'oss_path': oss_path,
                     'size_bytes': obj.size,
                     'last_modified': obj.last_modified,
-                    'key': key
+                    'key': key,
+                    'media_type': media_type
                 })
                 
-        logger.info(f"发现 {len(audio_files)} 个音频文件")
-        return audio_files
+        logger.info(f"发现 {len(media_files)} 个多媒体文件")
+        return media_files
     
-    def download_audio(self, oss_path: str, local_path: str) -> bool:
-        """从OSS下载音频文件"""
+    def list_audio_files(self, 
+                        prefix: Optional[str] = None,
+                        file_extensions: List[str] = ['.wav', '.mp3', '.flac']) -> List[Dict[str, Any]]:
+        """列出存储中的音频文件（向后兼容）"""
+        return self.list_media_files(prefix, file_extensions)
+    
+    def download_media(self, oss_path: str, local_path: str) -> bool:
+        """从OSS下载多媒体文件"""
         key = self.parse_oss_path(oss_path)
         return self.oss_client.download_object(key, local_path)
+    
+    def download_audio(self, oss_path: str, local_path: str) -> bool:
+        """从OSS下载音频文件（向后兼容）"""
+        return self.download_media(oss_path, local_path)
     
     def upload_result(self, 
                      file_id: str, 
@@ -158,3 +173,7 @@ class AudioStorageManager:
         """检查音频文件是否存在"""
         key = self.parse_oss_path(oss_path)
         return self.oss_client.object_exists(key)
+
+
+# 向后兼容的别名
+AudioStorageManager = MediaStorageManager  # 保持向后兼容性

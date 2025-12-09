@@ -51,7 +51,7 @@ class DataProducer:
     def __init__(self, 
                  data_loader_config: Dict[str, Any],
                  batch_size: int = 32):
-        from src.data.audio_indexer import DataLoader
+        from src.data.media_indexer import DataLoader
         from src.data.storage import AudioStorageManager
         
         self.data_loader = DataLoader(data_loader_config)

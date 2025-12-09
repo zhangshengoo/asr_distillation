@@ -59,6 +59,44 @@ class PipelineConfig:
 
 
 @dataclass
+class MediaConfig:
+    """多媒体处理配置 - 控制多种音视频格式的处理参数"""
+    # 支持的音频格式列表
+    audio_formats: List[str] = field(default_factory=lambda: [
+        "mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"
+    ])
+    
+    # 支持的视频格式列表
+    video_formats: List[str] = field(default_factory=lambda: [
+        "mp4", "avi", "mov", "mkv", "webm", "flv", "3gp"
+    ])
+    
+    # FFmpeg配置
+    ffmpeg: Dict[str, Any] = field(default_factory=lambda: {
+        # 并行转换进程数
+        "num_workers": 4,
+        # 转换超时时间(秒)
+        "timeout": 300,
+        # 转换质量: low/medium/high
+        "quality": "high"
+    })
+    
+    # 缓存配置
+    cache: Dict[str, Any] = field(default_factory=lambda: {
+        # 是否启用缓存
+        "enable": True,
+        # 最大缓存大小(GB)
+        "max_size_gb": 50,
+        # 缓存过期时间(小时)
+        "ttl_hours": 24
+    })
+    
+    # 性能设置
+    chunk_size: int = 1024 * 1024  # 1MB chunks for large files
+    max_file_size_mb: int = 500  # Maximum file size to process
+
+
+@dataclass
 class AudioConfig:
     """音频处理配置 - 控制音频预处理和特征提取参数"""
     # 目标采样率(Hz)，所有音频将重采样到此频率
