@@ -1,31 +1,79 @@
 #!/bin/bash
 
-# ASR Distillation Framework Startup Script
+# =============================================================================
+# ASR Distillation Framework 启动脚本
+# =============================================================================
+# 
+# 功能描述：
+#   这是ASR蒸馏框架的主要启动脚本，用于简化框架的使用和管理。
+#   支持运行pipeline、创建配置文件等核心操作。
+#
+# 使用环境要求：
+#   - Python 3.9+
+#   - CUDA 11.0+ (GPU推理)
+#   - 足够的磁盘空间用于缓存和日志
+#   - 网络连接（下载模型和数据）
+#
+# 作者：zhangshengoo
+# 版本：1.0.0
+# =============================================================================
 
+# 设置严格模式，遇到错误立即退出
 set -e
 
-# Default values
+# =============================================================================
+# 默认配置参数
+# =============================================================================
+# 默认配置文件路径
 CONFIG_FILE="config.yaml"
+
+# 最大处理批次数（空表示无限制）
 MAX_BATCHES=""
+
+# 日志级别 (DEBUG, INFO, WARNING, ERROR)
 LOG_LEVEL="INFO"
+
+# 执行动作 (run, create-config)
 ACTION="run"
 
-# Function to display usage
+# =============================================================================
+# 使用说明函数
+# =============================================================================
 usage() {
-    echo "Usage: $0 [OPTIONS]"
+    echo "ASR蒸馏框架启动脚本使用说明"
+    echo "================================"
     echo ""
-    echo "Options:"
-    echo "  -c, --config FILE      Configuration file (default: config.yaml)"
-    echo "  -b, --max-batches N    Maximum number of batches to process"
-    echo "  -l, --log-level LEVEL  Log level (DEBUG, INFO, WARNING, ERROR)"
-    echo "  -a, --action ACTION    Action to perform (run, create-config)"
-    echo "  -h, --help             Show this help message"
+    echo "用法: $0 [选项]"
     echo ""
-    echo "Examples:"
-    echo "  $0                                    # Run with default config"
-    echo "  $0 -c my_config.yaml                  # Run with custom config"
-    echo "  $0 -b 100 -l DEBUG                   # Run with 100 batches and debug logging"
-    echo "  $0 -a create-config -o new_config.yaml  # Create new config file"
+    echo "选项说明:"
+    echo "  -c, --config FILE      指定配置文件路径 (默认: config.yaml)"
+    echo "  -b, --max-batches N    限制处理的批次数"
+    echo "  -l, --log-level LEVEL  设置日志级别 (DEBUG|INFO|WARNING|ERROR)"
+    echo "  -a, --action ACTION    指定执行动作 (run|create-config)"
+    echo "  -o, --output FILE      输出文件路径 (用于create-config)"
+    echo "  -h, --help             显示此帮助信息"
+    echo ""
+    echo "使用示例:"
+    echo "  # 使用默认配置运行pipeline"
+    echo "  $0"
+    echo ""
+    echo "  # 使用自定义配置文件"
+    echo "  $0 -c my_config.yaml"
+    echo ""
+    echo "  # 限制处理100个批次，启用调试日志"
+    echo "  $0 -b 100 -l DEBUG"
+    echo ""
+    echo "  # 创建新的配置文件"
+    echo "  $0 -a create-config -o new_config.yaml"
+    echo ""
+    echo "  # 完整配置示例"
+    echo "  $0 -c production.yaml -b 1000 -l INFO"
+    echo ""
+    echo "注意事项:"
+    echo "  1. 请确保在项目根目录下运行此脚本"
+    echo "  2. 首次运行前请先创建配置文件"
+    echo "  3. GPU推理需要足够的显存（建议16GB+）"
+    echo "  4. 大规模处理建议使用screen或tmux运行"
 }
 
 # Parse command line arguments
