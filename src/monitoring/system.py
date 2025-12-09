@@ -12,18 +12,7 @@ import ray
 
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 from loguru import logger
-
-
-@dataclass
-class MonitoringConfig:
-    """Monitoring configuration"""
-    enable_prometheus: bool = True
-    prometheus_port: int = 8000
-    metrics_interval: float = 5.0  # seconds
-    enable_gpu_monitoring: bool = True
-    enable_ray_monitoring: bool = True
-    checkpoint_interval: int = 1000  # batches
-    checkpoint_dir: str = "./checkpoints"
+from src.config.manager import MonitoringConfig
 
 
 class MetricsCollector:

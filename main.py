@@ -29,7 +29,8 @@ from src.compute.inference import (
     PostProcessingStage
 )
 from src.storage.result_writer import ResultWriterStage
-from src.monitoring.system import MonitoringSystem, MonitoringConfig
+from src.monitoring.system import MonitoringSystem
+from src.config.manager import MonitoringConfig
 
 
 # Global variables for graceful shutdown
