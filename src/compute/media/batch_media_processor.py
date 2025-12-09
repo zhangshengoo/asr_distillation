@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import time
-from typing import Dict, List, Any, Optional, Tuple, Future
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict

@@ -170,10 +170,10 @@ class AudioDownloadStage(PipelineStage):
         if self.enable_multimedia:
             media_config = MediaConfig(**config.get('media', {}))
             cache_config = CacheConfig(
-                enabled=config.get('media', {}).get('cache', {}).get('enable', True),
+                enabled=media_config.cache_enable,
                 cache_dir=config.get('media', {}).get('cache', {}).get('cache_dir', './cache/media'),
-                max_size_gb=config.get('media', {}).get('cache', {}).get('max_size_gb', 50),
-                ttl_hours=config.get('media', {}).get('cache', {}).get('ttl_hours', 24)
+                max_size_gb=media_config.cache_max_size_gb,
+                ttl_hours=media_config.cache_ttl_hours
             )
             
             self.detector = MediaDetector()

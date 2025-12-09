@@ -1,6 +1,7 @@
 """Configuration management using OmegaConf"""
 
-from typing import Dict, Any, Optional
+import yaml
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -61,35 +62,20 @@ class PipelineConfig:
 @dataclass
 class MediaConfig:
     """多媒体处理配置 - 控制多种音视频格式的处理参数"""
-    # 支持的音频格式列表
-    audio_formats: List[str] = field(default_factory=lambda: [
-        "mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"
-    ])
-    
-    # 支持的视频格式列表
-    video_formats: List[str] = field(default_factory=lambda: [
-        "mp4", "avi", "mov", "mkv", "webm", "flv", "3gp"
-    ])
+    # 音频转换目标参数
+    target_sample_rate: int = 16000
+    target_channels: int = 1
+    target_format: str = "wav"
     
     # FFmpeg配置
-    ffmpeg: Dict[str, Any] = field(default_factory=lambda: {
-        # 并行转换进程数
-        "num_workers": 4,
-        # 转换超时时间(秒)
-        "timeout": 300,
-        # 转换质量: low/medium/high
-        "quality": "high"
-    })
+    ffmpeg_num_workers: int = 4
+    ffmpeg_timeout: int = 300
+    ffmpeg_quality: str = "high"  # low/medium/high
     
     # 缓存配置
-    cache: Dict[str, Any] = field(default_factory=lambda: {
-        # 是否启用缓存
-        "enable": True,
-        # 最大缓存大小(GB)
-        "max_size_gb": 50,
-        # 缓存过期时间(小时)
-        "ttl_hours": 24
-    })
+    cache_enable: bool = True
+    cache_max_size_gb: float = 50
+    cache_ttl_hours: int = 24
     
     # 性能设置
     chunk_size: int = 1024 * 1024  # 1MB chunks for large files
@@ -237,6 +223,46 @@ class MonitoringConfig:
 
 
 @dataclass
+class VADConfig:
+    """VAD语音活动检测配置 - 控制语音活动检测参数"""
+    # VAD模型路径
+    model_path: str = "silero_vad.onnx"
+    
+    # 采样率
+    sampling_rate: int = 16000
+    
+    # 检测阈值 (0.0-1.0)
+    threshold: float = 0.4
+    
+    # 最小语音时长(毫秒)
+    min_speech_duration_ms: int = 1500
+    
+    # 最小静音时长(毫秒)
+    min_silence_duration_ms: int = 1000
+    
+    # 语音填充(毫秒)
+    speech_pad_ms: int = 100
+    
+    # VAD批处理大小
+    batch_size: int = 32
+    
+    # 是否启用VAD缓存
+    cache_enabled: bool = True
+    
+    # VAD缓存目录
+    cache_dir: str = "./cache/vad"
+    
+    # VAD缓存最大大小(GB)
+    cache_max_size_gb: float = 10.0
+    
+    # 缓存生存时间(小时)
+    cache_ttl_hours: int = 24
+    
+    # VAD并行工作进程数
+    parallel_workers: int = 8
+
+
+@dataclass
 class ASRDistillationConfig:
     """ASR蒸馏框架主配置类 - 整合所有子模块配置"""
     # 数据层配置，管理音频数据索引、缓存和存储
@@ -244,6 +270,12 @@ class ASRDistillationConfig:
     
     # 流水线配置，控制分布式处理和资源分配
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
+    
+    # 多媒体处理配置，控制多种音视频格式的处理参数
+    media: MediaConfig = field(default_factory=MediaConfig)
+    
+    # VAD语音活动检测配置
+    vad: VADConfig = field(default_factory=VADConfig)
     
     # 音频处理配置，控制音频预处理和特征提取参数
     audio: AudioConfig = field(default_factory=AudioConfig)
@@ -286,11 +318,30 @@ class ConfigManager:
             
         if self.config_path and Path(self.config_path).exists():
             try:
-                # 从YAML文件加载配置
-                dict_config = OmegaConf.load(self.config_path)
+                # 使用标准yaml库加载配置
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    config_dict = yaml.safe_load(f)
                 
-                # 转换为数据类对象
-                self.config = OmegaConf.to_object(dict_config)
+                # 创建默认配置对象
+                self.config = ASRDistillationConfig()
+                
+                # 手动更新配置项
+                if 'data' in config_dict:
+                    self._update_dataclass(self.config.data, config_dict['data'])
+                if 'pipeline' in config_dict:
+                    self._update_dataclass(self.config.pipeline, config_dict['pipeline'])
+                if 'media' in config_dict:
+                    self._update_dataclass(self.config.media, config_dict['media'])
+                if 'vad' in config_dict:
+                    self._update_dataclass(self.config.vad, config_dict['vad'])
+                if 'audio' in config_dict:
+                    self._update_dataclass(self.config.audio, config_dict['audio'])
+                if 'inference' in config_dict:
+                    self._update_dataclass(self.config.inference, config_dict['inference'])
+                if 'writer' in config_dict:
+                    self._update_dataclass(self.config.writer, config_dict['writer'])
+                if 'monitoring' in config_dict:
+                    self._update_dataclass(self.config.monitoring, config_dict['monitoring'])
                 
                 logger.info(f"从 {self.config_path} 加载配置成功")
                 
@@ -303,6 +354,18 @@ class ConfigManager:
             logger.info("使用默认配置")
             
         return self.config
+    
+    def _update_dataclass(self, dataclass_obj, update_dict):
+        """
+        更新数据类对象的属性
+        
+        Args:
+            dataclass_obj: 数据类对象
+            update_dict: 更新字典
+        """
+        for key, value in update_dict.items():
+            if hasattr(dataclass_obj, key):
+                setattr(dataclass_obj, key, value)
     
     def save_config(self, config_path: str, config: Optional[ASRDistillationConfig] = None) -> None:
         """

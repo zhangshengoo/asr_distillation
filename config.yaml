@@ -32,22 +32,20 @@ pipeline:
 
 # 多媒体处理配置
 media:
-  # 支持的音频格式
-  audio_formats: ["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"]
-  # 支持的视频格式
-  video_formats: ["mp4", "avi", "mov", "mkv", "webm", "flv", "3gp"]
+  # 音频转换目标参数
+  target_sample_rate: 16000
+  target_channels: 1
+  target_format: "wav"
   
   # FFmpeg配置
-  ffmpeg:
-    num_workers: 4  # 并行转换进程数
-    timeout: 300    # 转换超时时间(秒)
-    quality: "high" # 转换质量: low/medium/high
+  ffmpeg_num_workers: 4  # 并行转换进程数
+  ffmpeg_timeout: 300    # 转换超时时间(秒)
+  ffmpeg_quality: "high" # 转换质量: low/medium/high
   
   # 缓存配置
-  cache:
-    enable: true
-    max_size_gb: 50
-    ttl_hours: 24
+  cache_enable: true
+  cache_max_size_gb: 50
+  cache_ttl_hours: 24
   
   # 性能设置
   chunk_size: 1048576  # 1MB chunks for large files

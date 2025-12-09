@@ -12,6 +12,7 @@
 - **Silero VAD集成**: 高精度语音活动检测工具，支持缓存和批量处理
 - **WebDataset支持**: 优化大规模数据集处理性能
 - **Parquet索引**: 提高大规模数据索引效率
+- **批量媒体处理器**: 高效的批量媒体处理，支持并行处理和缓存优化
 
 ### 核心技术栈
 - **Python 3.9+**
@@ -142,6 +143,7 @@ asr_distillation/
   - 内置LRU缓存系统，避免重复处理相同文件
   - 自动处理大文件分块，支持最大500MB文件
   - 详细的处理统计和错误报告
+  - 支持多种输入格式和音频质量配置
 
 ### 3. 调度层 (src/scheduling/)
 - **DistributedPipeline**: Ray分布式流水线核心实现
@@ -256,7 +258,7 @@ python main.py run --config my_config.yaml --log-level DEBUG
 
 ### 6. 运行测试
 ```bash
-# 运行所有测试
+# 使用测试运行脚本
 python tests/run_tests.py
 
 # 使用pytest直接运行
@@ -321,32 +323,36 @@ pytest tests/compute/test_batch_media_processor.py
 - `vad.parallel_workers`: VAD并行工作进程数
 
 ### 多媒体处理配置
-- `media.audio_formats`: 支持的音频格式列表
-  - 默认: ["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"]
-  - 可根据需求扩展其他格式
-- `media.video_formats`: 支持的视频格式列表
-  - 默认: ["mp4", "avi", "mov", "mkv", "webm", "flv", "3gp"]
-  - 可根据需求扩展其他格式
-- `media.ffmpeg.num_workers`: FFmpeg并行处理进程数
+- `media.target_sample_rate`: 音频转换目标采样率(Hz)
+  - 默认: 16000，适用于ASR处理
+- `media.target_channels`: 音频转换目标声道数
+  - 默认: 1(单声道)，适用于ASR处理
+- `media.target_format`: 音频转换目标格式
+  - 默认: "wav"，无损格式
+- `media.ffmpeg_num_workers`: FFmpeg并行处理进程数
   - 默认: 4，可根据CPU核心数调整
   - 建议设置为CPU核心数的50-80%
-- `media.ffmpeg.timeout`: FFmpeg转换超时时间(秒)
+- `media.ffmpeg_timeout`: FFmpeg转换超时时间(秒)
   - 默认: 300秒(5分钟)
   - 对于大文件可适当增加
-- `media.ffmpeg.quality`: 音频转换质量
+- `media.ffmpeg_quality`: 音频转换质量
   - 选项: "low"(64k), "medium"(128k), "high"(192k)
   - 高质量会增加处理时间和文件大小
-- `media.cache.enable`: 是否启用媒体处理缓存
+- `media.cache_enable`: 是否启用媒体处理缓存
   - 默认: true，建议启用以提高重复处理效率
-- `media.cache.max_size_gb`: 媒体缓存最大大小(GB)
+- `media.cache_max_size_gb`: 媒体缓存最大大小(GB)
   - 默认: 50GB，可根据磁盘空间调整
-- `media.cache.ttl_hours`: 缓存生存时间(小时)
+- `media.cache_ttl_hours`: 缓存生存时间(小时)
   - 默认: 24小时，可根据需求调整
 - `media.chunk_size`: 大文件分块处理大小(字节)
   - 默认: 1MB (1048576)
   - 对于大文件可适当增加
 - `media.max_file_size_mb`: 最大处理文件大小(MB)
   - 默认: 500MB，可根据内存和处理能力调整
+- **支持的格式**: 系统内置支持多种音视频格式
+  - 音频格式: mp3, wav, flac, aac, ogg, m4a, wma
+  - 视频格式: mp4, avi, mov, mkv, webm, flv, 3gp
+  - 格式检测基于文件签名和扩展名双重机制
 
 ### 推理配置
 - `inference.model_name`: 模型名称 (默认: Qwen/Qwen3-Omni-30B-A3B-Instruct)
@@ -400,6 +406,7 @@ pytest tests/compute/test_batch_media_processor.py
 - 支持异步测试 pytest-asyncio
 - 开发依赖包含完整的测试工具链
 - 使用 `tests/run_tests.py` 运行完整测试套件
+- 支持测试覆盖率分析
 
 ### 添加新模型
 1. 在 `examples/model_examples/` 创建新模型文件
@@ -714,4 +721,6 @@ pytest tests/data/test_audio_indexer.py
 - **增强型运行脚本**: 提供更便捷的命令行操作
 - **WebDataset支持**: 优化大规模数据集处理性能
 - **Parquet索引**: 提高大规模数据索引效率
+- **批量媒体处理器**: 高效的批量媒体处理，支持并行处理和缓存优化
 - **完整测试套件**: 覆盖所有核心组件的单元测试
+- **测试运行脚本**: 提供交互式测试运行界面

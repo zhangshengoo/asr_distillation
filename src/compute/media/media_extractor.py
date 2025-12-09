@@ -13,34 +13,7 @@ import ffmpeg
 from loguru import logger
 
 from .media_detector import MediaDetector, MediaInfo, MediaType
-
-
-@dataclass
-class MediaConfig:
-    """Media processing configuration"""
-    # Supported formats
-    audio_formats: List[str] = None
-    video_formats: List[str] = None
-    
-    # FFmpeg configuration
-    ffmpeg_num_workers: int = 4
-    ffmpeg_timeout: int = 300  # seconds
-    ffmpeg_quality: str = "high"  # low/medium/high
-    
-    # Output configuration
-    target_sample_rate: int = 16000
-    target_channels: int = 1
-    target_format: str = "wav"
-    
-    # Performance settings
-    chunk_size: int = 1024 * 1024  # 1MB chunks for large files
-    max_file_size_mb: int = 500  # Maximum file size to process
-    
-    def __post_init__(self):
-        if self.audio_formats is None:
-            self.audio_formats = ["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"]
-        if self.video_formats is None:
-            self.video_formats = ["mp4", "avi", "mov", "mkv", "webm", "flv", "3gp"]
+from src.config.manager import MediaConfig
 
 
 class MediaExtractor:
