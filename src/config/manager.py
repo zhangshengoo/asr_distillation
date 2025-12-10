@@ -1,12 +1,13 @@
-"""Configuration management using OmegaConf"""
+"""Configuration manager for ASR Distillation Framework"""
 
-import yaml
-from typing import Dict, Any, Optional, List
+import os
 from pathlib import Path
+from typing import Dict, Any, Optional
+import json
 from dataclasses import dataclass, field
 
 from omegaconf import OmegaConf, DictConfig
-from loguru import logger
+import yaml
 
 
 @dataclass
@@ -343,15 +344,15 @@ class ConfigManager:
                 if 'monitoring' in config_dict:
                     self._update_dataclass(self.config.monitoring, config_dict['monitoring'])
                 
-                logger.info(f"从 {self.config_path} 加载配置成功")
+                # logger.info(f"从 {self.config_path} 加载配置成功")
                 
             except Exception as e:
-                logger.error(f"加载配置失败: {e}")
+                # logger.error(f"加载配置失败: {e}")
                 self.config = ASRDistillationConfig()
         else:
             # 使用默认配置
             self.config = ASRDistillationConfig()
-            logger.info("使用默认配置")
+            # logger.info("使用默认配置")
             
         return self.config
     
@@ -380,19 +381,12 @@ class ConfigManager:
             
         if config is None:
             raise ValueError("没有可保存的配置")
-            
-        try:
-            # 转换为DictConfig
-            dict_config = OmegaConf.structured(config)
-            
-            # 保存为YAML文件
-            OmegaConf.save(dict_config, config_path)
-            
-            logger.info(f"配置已保存到 {config_path}")
-            
-        except Exception as e:
-            logger.error(f"保存配置失败: {e}")
-            raise
+        
+        # 转换为DictConfig
+        dict_config = OmegaConf.structured(config)
+        
+        # 保存为YAML文件
+        OmegaConf.save(dict_config, config_path)
     
     def get_config(self) -> ASRDistillationConfig:
         """
@@ -414,23 +408,16 @@ class ConfigManager:
         """
         if self.config is None:
             self.load_config()
-            
-        try:
-            # 转换为DictConfig以便合并
-            dict_config = OmegaConf.structured(self.config)
-            update_config = OmegaConf.create(updates)
-            
-            # 合并配置
-            merged_config = OmegaConf.merge(dict_config, update_config)
-            
-            # 转换回数据类
-            self.config = OmegaConf.to_object(merged_config)
-            
-            logger.info("配置更新成功")
-            
-        except Exception as e:
-            logger.error(f"更新配置失败: {e}")
-            raise
+        
+        # 转换为DictConfig以便合并
+        dict_config = OmegaConf.structured(self.config)
+        update_config = OmegaConf.create(updates)
+        
+        # 合并配置
+        merged_config = OmegaConf.merge(dict_config, update_config)
+        
+        # 转换回数据类
+        self.config = OmegaConf.to_object(merged_config)
     
     def validate_config(self, config: Optional[ASRDistillationConfig] = None) -> bool:
         """
@@ -446,32 +433,32 @@ class ConfigManager:
             config = self.config
             
         if config is None:
-            logger.error("没有可验证的配置")
+            # logger.error("没有可验证的配置")
             return False
             
         try:
             # 验证关键参数
             if config.pipeline.num_cpu_workers <= 0:
-                logger.error("CPU工作节点数必须为正数")
+                # logger.error("CPU工作节点数必须为正数")
                 return False
                 
             if config.pipeline.num_gpu_workers <= 0:
-                logger.error("GPU工作节点数必须为正数")
+                # logger.error("GPU工作节点数必须为正数")
                 return False
                 
             if config.audio.target_sample_rate <= 0:
-                logger.error("目标采样率必须为正数")
+                # logger.error("目标采样率必须为正数")
                 return False
                 
             if config.inference.model_name == "":
-                logger.error("模型名称不能为空")
+                # logger.error("模型名称不能为空")
                 return False
                 
-            logger.info("配置验证通过")
+            # logger.info("配置验证通过")
             return True
             
         except Exception as e:
-            logger.error(f"配置验证错误: {e}")
+            # logger.error(f"配置验证错误: {e}")
             return False
     
     def create_default_config_file(self, config_path: str) -> None:
@@ -483,7 +470,7 @@ class ConfigManager:
         """
         default_config = ASRDistillationConfig()
         self.save_config(config_path, default_config)
-        logger.info(f"已创建默认配置文件: {config_path}")
+        # logger.info(f"已创建默认配置文件: {config_path}")
 
 
 def create_sample_config() -> str:

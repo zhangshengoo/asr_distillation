@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from urllib.parse import urlparse
-from loguru import logger
+
 
 
 class OSSClient:
@@ -36,7 +36,6 @@ class OSSClient:
             self.bucket.get_object_to_file(key, local_path)
             return True
         except oss2.exceptions.OssError as e:
-            logger.error(f"下载OSS对象失败 {key}: {e}")
             return False
     
     def upload_object(self, key: str, local_path: str) -> bool:
@@ -45,7 +44,6 @@ class OSSClient:
             self.bucket.put_object_from_file(key, local_path)
             return True
         except oss2.exceptions.OssError as e:
-            logger.error(f"上传OSS对象失败 {key}: {e}")
             return False
     
     def get_object_metadata(self, key: str) -> Optional[Dict[str, Any]]:
@@ -59,7 +57,6 @@ class OSSClient:
                 'content_type': meta.headers.get('Content-Type')
             }
         except oss2.exceptions.OssError as e:
-            logger.error(f"获取OSS对象元数据失败 {key}: {e}")
             return None
     
     def object_exists(self, key: str) -> bool:
@@ -70,7 +67,6 @@ class OSSClient:
         except oss2.exceptions.NoSuchKey:
             return False
         except oss2.exceptions.OssError as e:
-            logger.error(f"检查OSS对象存在性失败 {key}: {e}")
             return False
 
 
@@ -122,7 +118,6 @@ class MediaStorageManager:
                     'media_type': media_type
                 })
                 
-        logger.info(f"发现 {len(media_files)} 个多媒体文件")
         return media_files
     
     def list_audio_files(self, 

@@ -9,7 +9,6 @@ from typing import Optional
 
 import typer
 import ray
-from loguru import logger
 
 from src.config.manager import ConfigManager, create_sample_config
 from src.scheduling.pipeline import PipelineOrchestrator
@@ -39,25 +38,8 @@ pipeline_orchestrator = None
 monitoring_system = None
 
 
-def setup_logging(level: str = "INFO") -> None:
-    """Setup logging configuration"""
-    logger.remove()
-    logger.add(
-        sys.stderr,
-        level=level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
-    )
-    logger.add(
-        "logs/asr_distillation_{time:YYYY-MM-DD}.log",
-        level="DEBUG",
-        rotation="100 MB",
-        retention="7 days"
-    )
-
-
 def signal_handler(signum, frame):
     """Handle shutdown signals"""
-    logger.info(f"Received signal {signum}, initiating graceful shutdown...")
     shutdown_event.set()
 
 
@@ -68,20 +50,13 @@ async def run_pipeline(config_path: str,
     global pipeline_orchestrator, monitoring_system
     
     try:
-        # Setup logging
-        setup_logging(log_level)
-        
         # Load configuration
         config_manager = ConfigManager(config_path)
         config = config_manager.load_config()
         
         # Validate configuration
         if not config_manager.validate_config(config):
-            logger.error("Configuration validation failed")
             return
-        
-        logger.info("Starting ASR Distillation Pipeline")
-        logger.info(f"Configuration loaded from: {config_path}")
         
         # Setup Ray first (before monitoring system to avoid conflicts)
         if not ray.is_initialized():
@@ -89,13 +64,11 @@ async def run_pipeline(config_path: str,
                 object_store_memory=config.pipeline.object_store_memory,
                 ignore_reinit_error=True
             )
-            logger.info("Ray cluster initialized")
         
         # Initialize monitoring system after Ray is ready
         monitoring_config = MonitoringConfig(**config.monitoring.__dict__)
         monitoring_system = MonitoringSystem(monitoring_config)
         monitoring_system.start()
-        logger.info("Monitoring system started after Ray initialization")
         
         # Initialize pipeline orchestrator
         pipeline_config = {
@@ -206,7 +179,6 @@ async def run_pipeline(config_path: str,
         # Progress callback
         def progress_callback(current: int, total: int):
             progress = (current / total) * 100
-            logger.info(f"Pipeline progress: {current}/{total} ({progress:.1f}%)")
         
         # Run pipeline
         start_time = time.time()
@@ -235,17 +207,12 @@ async def run_pipeline(config_path: str,
             for batch in results
         )
         
-        logger.info(f"Pipeline completed in {duration:.2f} seconds")
-        logger.info(f"Processed {total_items} items, {successful_items} successful")
-        logger.info(f"Throughput: {total_items / duration:.2f} items/second")
-        
         # Export final metrics
         if monitoring_system:
             stats = monitoring_system.get_system_stats()
             monitoring_system.export_metrics("logs/final_metrics.json")
         
     except Exception as e:
-        logger.error(f"Pipeline execution failed: {e}")
         raise
     finally:
         await cleanup()
@@ -254,8 +221,6 @@ async def run_pipeline(config_path: str,
 async def cleanup():
     """Cleanup resources"""
     global pipeline_orchestrator, monitoring_system
-    
-    logger.info("Cleaning up resources...")
 
     if pipeline_orchestrator:
         pipeline_orchestrator.cleanup()

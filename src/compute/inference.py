@@ -11,7 +11,6 @@ import numpy as np
 from vllm import SamplingParams, AsyncLLMEngine
 from vllm.engine.arg_utils import AsyncEngineArgs
 from transformers import Qwen3OmniMoeProcessor
-from loguru import logger
 
 # Set environment variables for Qwen3-Omni
 os.environ['VLLM_USE_V1'] = '0'
@@ -21,34 +20,7 @@ os.environ["VLLM_LOGGING_LEVEL"] = "ERROR"
 from ..scheduling.pipeline import PipelineStage, DataBatch
 
 # Import Qwen3-Omni utilities
-try:
-    from qwen_omni_utils import process_mm_info
-except ImportError:
-    logger.warning("qwen_omni_utils not found, using fallback implementation")
-    
-    def process_mm_info(messages, use_audio_in_video=False):
-        """Fallback implementation for processing multimodal info"""
-        audios = None
-        images = None
-        videos = None
-        
-        for message in messages:
-            if isinstance(message.get('content'), list):
-                for content in message['content']:
-                    if content.get('type') == 'audio':
-                        if audios is None:
-                            audios = []
-                        audios.append(content['audio'])
-                    elif content.get('type') == 'image':
-                        if images is None:
-                            images = []
-                        images.append(content['image'])
-                    elif content.get('type') == 'video':
-                        if videos is None:
-                            videos = []
-                        videos.append(content['video'])
-        
-        return audios, images, videos
+from qwen_omni_utils import process_mm_info
 
 
 @dataclass
@@ -85,17 +57,10 @@ class AudioModelProcessor:
         
     def _load_processor(self) -> None:
         """Load model processor and tokenizer"""
-        try:
-            self.processor = Qwen3OmniMoeProcessor.from_pretrained(
-                self.config.model_name,
-                trust_remote_code=self.config.trust_remote_code
-            )
-            
-            logger.info(f"Loaded Qwen3-Omni processor for {self.config.model_name}")
-            
-        except Exception as e:
-            logger.error(f"Error loading Qwen3-Omni processor: {e}")
-            raise
+        self.processor = Qwen3OmniMoeProcessor.from_pretrained(
+            self.config.model_name,
+            trust_remote_code=self.config.trust_remote_code
+        )
     
     def prepare_inputs(self, 
                       audio_features: torch.Tensor,
@@ -174,7 +139,6 @@ class VLLMInferenceEngine:
         )
         
         self.engine = AsyncLLMEngine.from_engine_args(engine_args)
-        logger.info("vLLM engine setup complete")
     
     async def generate_async(self, 
                            inputs: Dict[str, Any],
@@ -214,36 +178,26 @@ class AudioInferenceStage(PipelineStage):
         """Process batch through inference"""
         processed_items = []
         
-        for item in batch.items:
-            try:
-                if 'error' in item:
-                    processed_items.append(item)
-                    continue
-                    
-                audio_features = item['audio_features']
-                sample_rate = item['sample_rate']
-                
-                # Prepare inputs for Qwen3-Omni model
-                inputs = self.inference_engine.model_processor.prepare_inputs(
-                    audio_features,
-                    sample_rate,
-                    self.prompt_template
-                )
-                
-                # Run inference (simplified for this example)
-                # In practice, you'd use the async engine properly
-                transcription = self._run_inference_sync(inputs)
-                
-                # Update item with results
-                item['transcription'] = transcription
-                item['inference_timestamp'] = time.time()
-                
-                processed_items.append(item)
-                
-            except Exception as e:
-                logger.error(f"Error in inference for {item['file_id']}: {e}")
-                item['error'] = str(e)
-                processed_items.append(item)
+        for item in batch.items:                    
+            audio_features = item['audio_features']
+            sample_rate = item['sample_rate']
+            
+            # Prepare inputs for Qwen3-Omni model
+            inputs = self.inference_engine.model_processor.prepare_inputs(
+                audio_features,
+                sample_rate,
+                self.prompt_template
+            )
+            
+            # Run inference (simplified for this example)
+            # In practice, you'd use the async engine properly
+            transcription = self._run_inference_sync(inputs)
+            
+            # Update item with results
+            item['transcription'] = transcription
+            item['inference_timestamp'] = time.time()
+            
+            processed_items.append(item)
         
         # Create new batch with inference results
         new_batch = DataBatch(
@@ -278,50 +232,37 @@ class BatchInferenceStage(PipelineStage):
         """Process batch with batched inference"""
         processed_items = []
         
-        # Filter out items with errors
+        # Filter out items with errors - only process valid items
         valid_items = [item for item in batch.items if 'error' not in item]
-        error_items = [item for item in batch.items if 'error' in item]
         
         # Process valid items in batches
         for i in range(0, len(valid_items), self.batch_size):
             batch_items = valid_items[i:i + self.batch_size]
+            # Prepare batch inputs
+            batch_inputs = []
+            for item in batch_items:
+                audio_features = item['audio_features']
+                inputs = self.inference_engine.model_processor.prepare_inputs(
+                    audio_features,
+                    self.prompt_template
+                )
+                batch_inputs.append(inputs)
             
-            try:
-                # Prepare batch inputs
-                batch_inputs = []
-                for item in batch_items:
-                    audio_features = item['audio_features']
-                    inputs = self.inference_engine.model_processor.prepare_inputs(
-                        audio_features,
-                        self.prompt_template
-                    )
-                    batch_inputs.append(inputs)
-                
-                # Run batch inference
-                batch_results = self._run_batch_inference(batch_inputs)
-                
-                # Update items with results
-                for item, result in zip(batch_items, batch_results):
-                    item['transcription'] = result
-                    item['inference_timestamp'] = time.time()
-                    # 为segment级别的处理添加置信度（如果模型提供）
-                    if isinstance(result, dict) and 'confidence' in result:
-                        item['confidence'] = result['confidence']
-                    else:
-                        item['confidence'] = 0.0  # 默认值
-                    processed_items.append(item)
+            # Run batch inference
+            batch_results = self._run_batch_inference(batch_inputs)
+            
+            # Update items with results
+            for item, result in zip(batch_items, batch_results):
+                item['transcription'] = result
+                item['inference_timestamp'] = time.time()
+                # 为segment级别的处理添加置信度（如果模型提供）
+                if isinstance(result, dict) and 'confidence' in result:
+                    item['confidence'] = result['confidence']
+                else:
+                    item['confidence'] = 0.0  # 默认值
+                processed_items.append(item)
                     
-            except Exception as e:
-                logger.error(f"Error in batch inference: {e}")
-                # Mark all items in this batch as failed
-                for item in batch_items:
-                    item['error'] = str(e)
-                    processed_items.append(item)
-        
-        # Add items that already had errors
-        processed_items.extend(error_items)
-        
-        # Create new batch with inference results
+        # Create new batch with inference results - exclude error items
         new_batch = DataBatch(
             batch_id=batch.batch_id,
             items=processed_items,
@@ -356,42 +297,32 @@ class PostProcessingStage(PipelineStage):
         processed_items = []
         
         for item in batch.items:
-            try:
-                if 'error' in item:
-                    processed_items.append(item)
-                    continue
-                    
-                transcription = item.get('transcription', '')
-                
-                # Clean up transcription
-                cleaned_transcription = self._clean_transcription(transcription)
-                
-                # Format output
-                if self.output_format == 'json':
-                    output = {
-                        'file_id': item['file_id'],
-                        'transcription': cleaned_transcription,
-                        'timestamp': item.get('inference_timestamp', time.time()),
-                        'metadata': {
-                            'duration': item.get('audio_tensor', {}).get('duration', 0),
-                            'sample_rate': item.get('audio_tensor', {}).get('sample_rate', 16000)
-                        }
+            transcription = item.get('transcription', '')
+            
+            # Clean up transcription
+            cleaned_transcription = self._clean_transcription(transcription)
+            
+            # Format output
+            if self.output_format == 'json':
+                output = {
+                    'file_id': item['file_id'],
+                    'transcription': cleaned_transcription,
+                    'timestamp': item.get('inference_timestamp', time.time()),
+                    'metadata': {
+                        'duration': item.get('audio_tensor', {}).get('duration', 0),
+                        'sample_rate': item.get('audio_tensor', {}).get('sample_rate', 16000)
                     }
-                else:
-                    output = {
-                        'file_id': item['file_id'],
-                        'text': cleaned_transcription
-                    }
-                
-                item['output'] = output
-                item['transcription'] = cleaned_transcription  # Keep for compatibility
-                
-                processed_items.append(item)
-                
-            except Exception as e:
-                logger.error(f"Error in post-processing for {item['file_id']}: {e}")
-                item['error'] = str(e)
-                processed_items.append(item)
+                }
+            else:
+                output = {
+                    'file_id': item['file_id'],
+                    'text': cleaned_transcription
+                }
+            
+            item['output'] = output
+            item['transcription'] = cleaned_transcription  # Keep for compatibility
+            
+            processed_items.append(item)
         
         # Create new batch with post-processed results
         new_batch = DataBatch(

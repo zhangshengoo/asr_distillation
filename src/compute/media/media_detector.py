@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
-from loguru import logger
+
 
 
 class MediaType(Enum):
@@ -109,7 +109,6 @@ class MediaDetector:
         
         # Default to unknown if detection fails
         if format_info is None:
-            logger.warning(f"Could not detect media format for file: {filename}")
             return MediaInfo(
                 media_type=MediaType.UNKNOWN,
                 format_name="unknown",

@@ -10,8 +10,6 @@ from collections import defaultdict
 import pickle
 import os
 
-from loguru import logger
-
 from .media_detector import MediaDetector, MediaInfo, MediaType
 from .media_extractor import MediaExtractor, MediaConfig
 
@@ -85,7 +83,7 @@ class MediaCache:
                 with open(index_file, 'rb') as f:
                     return pickle.load(f)
         except Exception as e:
-            logger.warning(f"Failed to load cache index: {e}")
+            pass
         
         return {}
     
@@ -96,7 +94,7 @@ class MediaCache:
             with open(index_file, 'wb') as f:
                 pickle.dump(self._index, f)
         except Exception as e:
-            logger.error(f"Failed to save cache index: {e}")
+            pass
     
     def _get_cache_path(self, cache_key: str) -> str:
         """Get cache file path for key"""
@@ -116,20 +114,16 @@ class MediaCache:
         for key in expired_keys:
             self._remove_entry(key)
         
-        if expired_keys:
-            logger.info(f"Cleaned up {len(expired_keys)} expired cache entries")
+        
     
     def _remove_entry(self, cache_key: str):
         """Remove cache entry"""
         cache_path = self._get_cache_path(cache_key)
-        try:
-            if os.path.exists(cache_path):
-                os.unlink(cache_path)
-            if cache_key in self._index:
-                del self._index[cache_key]
-        except Exception as e:
-            logger.error(f"Failed to remove cache entry {cache_key}: {e}")
-    
+        if os.path.exists(cache_path):
+            os.unlink(cache_path)
+        if cache_key in self._index:
+            del self._index[cache_key]
+
     def _enforce_size_limit(self):
         """Enforce cache size limit using LRU"""
         total_size = sum(entry['size'] for entry in self._index.values())
@@ -149,7 +143,7 @@ class MediaCache:
                 if total_size <= self.max_size_bytes * 0.8:  # Leave 20% headroom
                     break
             
-            logger.info(f"Cache cleanup completed. Current size: {total_size / (1024**2):.1f} MB")
+            
     
     def get(self, cache_key: str) -> Optional[AudioData]:
         """Get cached audio data"""
@@ -179,7 +173,6 @@ class MediaCache:
             return audio_data
             
         except Exception as e:
-            logger.error(f"Failed to load cached data {cache_key}: {e}")
             self._remove_entry(cache_key)
             return None
     
@@ -208,7 +201,6 @@ class MediaCache:
             self._save_index()
             
         except Exception as e:
-            logger.error(f"Failed to cache data {cache_key}: {e}")
             try:
                 if os.path.exists(cache_path):
                     os.unlink(cache_path)
@@ -269,11 +261,7 @@ class BatchMediaProcessor:
         self.stats['cache_hits'] += len(cached_results)
         self.stats['processing_time'] += time.time() - start_time
         
-        logger.info(
-            f"Batch processed: {len(media_items)} items, "
-            f"cache hits: {len(cached_results)}, "
-            f"errors: {len(media_items) - len(all_results)}"
-        )
+        
         
         return all_results
     
@@ -284,7 +272,6 @@ class BatchMediaProcessor:
         for item in media_items:
             # Validate file size
             if not self.extractor.validate_file_size(item.file_bytes):
-                logger.warning(f"Skipping oversized file: {item.item_id}")
                 continue
             
             # Detect format
@@ -292,7 +279,6 @@ class BatchMediaProcessor:
             
             # Check if format is supported
             if not self.detector.is_supported(media_info):
-                logger.warning(f"Unsupported format: {media_info.format_name} for {item.item_id}")
                 continue
             
             # Store media info in metadata
@@ -341,40 +327,34 @@ class BatchMediaProcessor:
                 self.cache.put(item.cache_key, audio_data)
                 
             except Exception as e:
-                logger.error(f"Failed to process item {item.item_id}: {e}")
                 self.stats['errors'] += 1
         
         return results
     
     def _process_single_item(self, media_item: MediaItem) -> AudioData:
         """Process a single media item"""
-        try:
-            # Get media info from metadata
-            media_info = media_item.metadata['media_info']
-            
-            # Extract audio
-            audio_bytes = self.extractor.extract_audio(media_item.file_bytes, media_info)
-            
-            # Extract metadata
-            audio_metadata = self.extractor.extract_audio_metadata(
-                media_item.file_bytes, media_info
-            )
-            
-            # Create audio data object
-            audio_data = AudioData(
-                item_id=media_item.item_id,
-                audio_bytes=audio_bytes,
-                sample_rate=self.config.target_sample_rate,
-                channels=self.config.target_channels,
-                duration=audio_metadata.get('duration'),
-                metadata=audio_metadata
-            )
-            
-            return audio_data
-            
-        except Exception as e:
-            logger.error(f"Error processing media item {media_item.item_id}: {e}")
-            raise
+        # Get media info from metadata
+        media_info = media_item.metadata['media_info']
+        
+        # Extract audio
+        audio_bytes = self.extractor.extract_audio(media_item.file_bytes, media_info)
+        
+        # Extract metadata
+        audio_metadata = self.extractor.extract_audio_metadata(
+            media_item.file_bytes, media_info
+        )
+        
+        # Create audio data object
+        audio_data = AudioData(
+            item_id=media_item.item_id,
+            audio_bytes=audio_bytes,
+            sample_rate=self.config.target_sample_rate,
+            channels=self.config.target_channels,
+            duration=audio_metadata.get('duration'),
+            metadata=audio_metadata
+        )
+        
+        return audio_data
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get processing statistics"""

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import ray
 import numpy as np
-from loguru import logger
 
 from src.compute.vad import VADProcessor, AudioSegment, VADResult
 from src.compute.audio_processor import PipelineStage
@@ -35,16 +34,11 @@ class VADProcessingStage(PipelineStage):
     
     def _init_vad_processor(self) -> None:
         """初始化VAD处理器"""
-        try:
-            # 确保缓存目录存在
-            cache_dir = self.vad_config.get('cache_dir', './cache/vad')
-            Path(cache_dir).mkdir(parents=True, exist_ok=True)
-            
-            self.vad_processor = VADProcessor(self.vad_config)
-            logger.info(f"VAD处理器初始化成功，缓存目录: {cache_dir}")
-        except Exception as e:
-            logger.error(f"VAD处理器初始化失败: {e}")
-            raise
+        # 确保缓存目录存在
+        cache_dir = self.vad_config.get('cache_dir', './cache/vad')
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        
+        self.vad_processor = VADProcessor(self.vad_config)
     
     def process_batch(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """处理音频批次"""
@@ -62,7 +56,6 @@ class VADProcessingStage(PipelineStage):
                 if audio_data is not None and sample_rate is not None:
                     audio_batch.append((file_id, audio_data, sample_rate))
                 else:
-                    logger.warning(f"跳过无效音频数据: {file_id}")
                     results.append({
                         'file_id': file_id,
                         'error': 'Invalid audio data',
@@ -99,7 +92,6 @@ class VADProcessingStage(PipelineStage):
                         self.stats['total_speech_duration'] += vad_result.total_speech_duration
                         
                     except Exception as e:
-                        logger.error(f"音频切分失败 {file_id}: {e}")
                         results.append({
                             'file_id': file_id,
                             'error': str(e),
@@ -112,12 +104,10 @@ class VADProcessingStage(PipelineStage):
             # 记录批次统计
             batch_size = len(batch)
             total_segments = sum(r.get('num_segments', 0) for r in results)
-            logger.info(f"VAD批次处理完成: {batch_size}个文件, {total_segments}个语音片段")
             
             return results
             
         except Exception as e:
-            logger.error(f"VAD批次处理失败: {e}")
             # 返回错误结果，保持批次完整性
             error_results = []
             for item in batch:
@@ -154,9 +144,8 @@ class VADProcessingStage(PipelineStage):
         try:
             if self.vad_processor and hasattr(self.vad_processor, 'cache'):
                 self.vad_processor.cache.clear()
-            logger.info("VAD处理阶段资源清理完成")
         except Exception as e:
-            logger.error(f"VAD处理阶段资源清理失败: {e}")
+            pass
 
 
 class VADStageAdapter:
@@ -169,7 +158,6 @@ class VADStageAdapter:
     def initialize(self) -> None:
         """初始化VAD阶段"""
         self.vad_stage = VADProcessingStage.remote(self.config)
-        logger.info("VAD阶段适配器初始化完成")
     
     def process_batch(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """处理批次"""
@@ -182,7 +170,6 @@ class VADStageAdapter:
             results = ray.get(results_ref)
             return results
         except Exception as e:
-            logger.error(f"VAD批次处理失败: {e}")
             raise
     
     def get_stats(self) -> Dict[str, Any]:
@@ -194,7 +181,6 @@ class VADStageAdapter:
             stats_ref = self.vad_stage.get_stats.remote()
             return ray.get(stats_ref)
         except Exception as e:
-            logger.error(f"获取VAD统计信息失败: {e}")
             return {}
     
     def cleanup(self) -> None:
@@ -204,9 +190,8 @@ class VADStageAdapter:
                 self.vad_stage.cleanup.remote()
                 ray.kill(self.vad_stage)
                 self.vad_stage = None
-                logger.info("VAD阶段适配器清理完成")
             except Exception as e:
-                logger.error(f"VAD阶段适配器清理失败: {e}")
+                pass
 
 
 # 工厂函数

@@ -9,8 +9,6 @@ from dataclasses import dataclass, asdict
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
-from loguru import logger
-
 from ..data.storage import AudioStorageManager
 from ..scheduling.pipeline import DataBatch
 
@@ -91,7 +89,6 @@ class FileWriter:
                     f.write(json.dumps(item, ensure_ascii=False) + '\n')
             return True
         except Exception as e:
-            logger.error(f"Error writing JSONL to {file_path}: {e}")
             return False
     
     def write_json(self, data: List[Dict[str, Any]], file_path: str) -> bool:
@@ -101,7 +98,6 @@ class FileWriter:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            logger.error(f"Error writing JSON to {file_path}: {e}")
             return False
     
     def write_parquet(self, data: List[Dict[str, Any]], file_path: str) -> bool:
@@ -112,7 +108,6 @@ class FileWriter:
             df.to_parquet(file_path, index=False)
             return True
         except Exception as e:
-            logger.error(f"Error writing Parquet to {file_path}: {e}")
             return False
     
     def write_data(self, data: List[Dict[str, Any]], file_path: str) -> bool:
@@ -124,7 +119,6 @@ class FileWriter:
         elif self.config.output_format == 'parquet':
             return self.write_parquet(data, file_path)
         else:
-            logger.error(f"Unsupported output format: {self.config.output_format}")
             return False
 
 
@@ -158,7 +152,6 @@ class AsyncResultWriter:
             
         self.running = True
         self.writer_task = asyncio.create_task(self._writer_loop())
-        logger.info("Async result writer started")
         
     async def stop(self) -> None:
         """Stop the async writer"""
@@ -177,7 +170,6 @@ class AsyncResultWriter:
             await self.writer_task
             
         self.executor.shutdown(wait=True)
-        logger.info("Async result writer stopped")
         
     async def write_item(self, item: Dict[str, Any]) -> None:
         """Write a single item"""
@@ -224,7 +216,6 @@ class AsyncResultWriter:
                 await asyncio.sleep(0.1)
                 
             except Exception as e:
-                logger.error(f"Error in writer loop: {e}")
                 self.stats['errors'] += 1
                 await asyncio.sleep(1)
     
@@ -259,17 +250,13 @@ class AsyncResultWriter:
                     Path(temp_file).unlink(missing_ok=True)
                 else:
                     self.stats['errors'] += 1
-                    logger.error(f"Failed to upload {filename}")
             
             # Update statistics
             self.stats['items_written'] += len(batch)
             self.stats['files_written'] += 1
             self.stats['last_flush'] = time.time()
             
-            logger.info(f"Wrote batch of {len(batch)} items to {filename}")
-            
         except Exception as e:
-            logger.error(f"Error writing batch: {e}")
             self.stats['errors'] += 1
     
     async def _upload_to_storage(self, local_file: str, remote_filename: str) -> bool:
@@ -297,7 +284,6 @@ class AsyncResultWriter:
             return False
             
         except Exception as e:
-            logger.error(f"Error uploading to storage: {e}")
             return False
     
     def get_stats(self) -> Dict[str, Any]:
@@ -351,7 +337,6 @@ class ResultWriterStage:
             return batch
             
         except Exception as e:
-            logger.error(f"Error in result writer stage: {e}")
             batch.metadata['writer_error'] = str(e)
             return batch
     
@@ -413,5 +398,4 @@ class BatchResultAggregator:
             file_writer = FileWriter(config)
             return file_writer.write_data(self.aggregated_results, output_path)
         except Exception as e:
-            logger.error(f"Error saving aggregated results: {e}")
             return False

@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 import ffmpeg
-from loguru import logger
 
 from .media_detector import MediaDetector, MediaInfo, MediaType
 from src.config.manager import MediaConfig
@@ -42,205 +41,156 @@ class MediaExtractor:
         Returns:
             Extracted audio bytes in target format
         """
-        try:
-            if media_info.media_type == MediaType.AUDIO:
-                return self._convert_audio_format(media_bytes, media_info)
-            elif media_info.media_type == MediaType.VIDEO:
-                return self._extract_from_video(media_bytes, media_info)
-            else:
-                raise ValueError(f"Unsupported media type: {media_info.media_type}")
-                
-        except Exception as e:
-            logger.error(f"Error extracting audio: {e}")
-            raise
+        if media_info.media_type == MediaType.AUDIO:
+            return self._convert_audio_format(media_bytes, media_info)
+        elif media_info.media_type == MediaType.VIDEO:
+            return self._extract_from_video(media_bytes, media_info)
+        else:
+            raise ValueError(f"Unsupported media type: {media_info.media_type}")
     
     def _convert_audio_format(self, audio_bytes: bytes, media_info: MediaInfo) -> bytes:
         """Convert audio to target format"""
-        try:
-            # Create temporary files
-            with tempfile.NamedTemporaryFile(
-                suffix=f".{media_info.extension}", 
-                delete=False
-            ) as input_file, tempfile.NamedTemporaryFile(
-                suffix=f".{self.config.target_format}", 
-                delete=False
-            ) as output_file:
-                
-                input_path = input_file.name
-                output_path = output_file.name
-                
-                # Write input data
-                input_file.write(audio_bytes)
-                input_file.flush()
-                
-                # Build FFmpeg command
-                quality = self.quality_settings[self.config.ffmpeg_quality]
-                
-                cmd = [
-                    'ffmpeg', '-y',  # Overwrite output file
-                    '-i', input_path,
-                    '-ar', str(self.config.target_sample_rate),
-                    '-ac', str(self.config.target_channels),
-                    '-f', self.config.target_format,
-                    '-ab', quality["audio_bitrate"],
-                    '-loglevel', 'error',
-                    output_path
-                ]
-                
-                # Run FFmpeg
-                process = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.config.ffmpeg_timeout
+        # Create temporary files
+        with tempfile.NamedTemporaryFile(
+            suffix=f".{media_info.extension}", 
+            delete=False
+        ) as input_file, tempfile.NamedTemporaryFile(
+            suffix=f".{self.config.target_format}", 
+            delete=False
+        ) as output_file:
+            
+            input_path = input_file.name
+            output_path = output_file.name
+            
+            # Write input data
+            input_file.write(audio_bytes)
+            input_file.flush()
+            
+            # Build FFmpeg command
+            quality = self.quality_settings[self.config.ffmpeg_quality]
+            
+            cmd = [
+                'ffmpeg', '-y',  # Overwrite output file
+                '-i', input_path,
+                '-ar', str(self.config.target_sample_rate),
+                '-ac', str(self.config.target_channels),
+                '-f', self.config.target_format,
+                '-ab', quality["audio_bitrate"],
+                '-loglevel', 'error',
+                output_path
+            ]
+            
+            # Run FFmpeg
+            process = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.config.ffmpeg_timeout
+            )
+            
+            if process.returncode != 0:
+                error_msg = process.stderr.strip() or process.stdout.strip()
+                raise subprocess.CalledProcessError(
+                    process.returncode, cmd, error_msg
                 )
-                
-                if process.returncode != 0:
-                    error_msg = process.stderr.strip() or process.stdout.strip()
-                    raise subprocess.CalledProcessError(
-                        process.returncode, cmd, error_msg
-                    )
-                
-                # Read output
-                with open(output_path, 'rb') as f:
-                    output_bytes = f.read()
-                
-                return output_bytes
-                
-        except subprocess.TimeoutExpired:
-            logger.error(f"FFmpeg timeout for format conversion")
-            raise
-        except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg error: {e.stderr}")
-            raise
-        except Exception as e:
-            logger.error(f"Error converting audio format: {e}")
-            raise
-        finally:
-            # Cleanup temporary files
-            try:
-                if 'input_path' in locals():
-                    os.unlink(input_path)
-                if 'output_path' in locals():
-                    os.unlink(output_path)
-            except:
-                pass
+            
+            # Read output
+            with open(output_path, 'rb') as f:
+                output_bytes = f.read()
+            
+            return output_bytes
     
     def _extract_from_video(self, video_bytes: bytes, media_info: MediaInfo) -> bytes:
         """Extract audio from video file"""
-        try:
-            # Create temporary files
-            with tempfile.NamedTemporaryFile(
-                suffix=f".{media_info.extension}", 
-                delete=False
-            ) as input_file, tempfile.NamedTemporaryFile(
-                suffix=f".{self.config.target_format}", 
-                delete=False
-            ) as output_file:
-                
-                input_path = input_file.name
-                output_path = output_file.name
-                
-                # Write input data
-                input_file.write(video_bytes)
-                input_file.flush()
-                
-                # Build FFmpeg command for audio extraction
-                quality = self.quality_settings[self.config.ffmpeg_quality]
-                
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-i', input_path,
-                    '-vn',  # No video
-                    '-ar', str(self.config.target_sample_rate),
-                    '-ac', str(self.config.target_channels),
-                    '-f', self.config.target_format,
-                    '-ab', quality["audio_bitrate"],
-                    '-loglevel', 'error',
-                    output_path
-                ]
-                
-                # Run FFmpeg
-                process = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.config.ffmpeg_timeout
+        # Create temporary files
+        with tempfile.NamedTemporaryFile(
+            suffix=f".{media_info.extension}", 
+            delete=False
+        ) as input_file, tempfile.NamedTemporaryFile(
+            suffix=f".{self.config.target_format}", 
+            delete=False
+        ) as output_file:
+            
+            input_path = input_file.name
+            output_path = output_file.name
+            
+            # Write input data
+            input_file.write(video_bytes)
+            input_file.flush()
+            
+            # Build FFmpeg command for audio extraction
+            quality = self.quality_settings[self.config.ffmpeg_quality]
+            
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', input_path,
+                '-vn',  # No video
+                '-ar', str(self.config.target_sample_rate),
+                '-ac', str(self.config.target_channels),
+                '-f', self.config.target_format,
+                '-ab', quality["audio_bitrate"],
+                '-loglevel', 'error',
+                output_path
+            ]
+            
+            # Run FFmpeg
+            process = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.config.ffmpeg_timeout
+            )
+            
+            if process.returncode != 0:
+                error_msg = process.stderr.strip() or process.stdout.strip()
+                raise subprocess.CalledProcessError(
+                    process.returncode, cmd, error_msg
                 )
-                
-                if process.returncode != 0:
-                    error_msg = process.stderr.strip() or process.stdout.strip()
-                    raise subprocess.CalledProcessError(
-                        process.returncode, cmd, error_msg
-                    )
-                
-                # Read output
-                with open(output_path, 'rb') as f:
-                    output_bytes = f.read()
-                
-                return output_bytes
-                
-        except subprocess.TimeoutExpired:
-            logger.error(f"FFmpeg timeout for video audio extraction")
-            raise
-        except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg error: {e.stderr}")
-            raise
-        except Exception as e:
-            logger.error(f"Error extracting audio from video: {e}")
-            raise
-        finally:
-            # Cleanup temporary files
-            try:
-                if 'input_path' in locals():
-                    os.unlink(input_path)
-                if 'output_path' in locals():
-                    os.unlink(output_path)
-            except:
-                pass
+            
+            # Read output
+            with open(output_path, 'rb') as f:
+                output_bytes = f.read()
+            
+            return output_bytes
     
     def extract_audio_metadata(self, media_bytes: bytes, media_info: MediaInfo) -> Dict[str, Any]:
         """Extract metadata from media file"""
+        with tempfile.NamedTemporaryFile(
+            suffix=f".{media_info.extension}", 
+            delete=False
+        ) as input_file:
+            
+            input_path = input_file.name
+            input_file.write(media_bytes)
+            input_file.flush()
+            
+            # Use ffprobe to get metadata
+            cmd = [
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_format', '-show_streams', input_path
+            ]
+            
+            process = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if process.returncode == 0:
+                import json
+                metadata = json.loads(process.stdout)
+                result = self._parse_metadata(metadata, media_info)
+            else:
+                result = {}
+        
+        # Cleanup temporary file
         try:
-            with tempfile.NamedTemporaryFile(
-                suffix=f".{media_info.extension}", 
-                delete=False
-            ) as input_file:
-                
-                input_path = input_file.name
-                input_file.write(media_bytes)
-                input_file.flush()
-                
-                # Use ffprobe to get metadata
-                cmd = [
-                    'ffprobe', '-v', 'quiet', '-print_format', 'json',
-                    '-show_format', '-show_streams', input_path
-                ]
-                
-                process = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if process.returncode == 0:
-                    import json
-                    metadata = json.loads(process.stdout)
-                    return self._parse_metadata(metadata, media_info)
-                else:
-                    logger.warning(f"Failed to extract metadata: {process.stderr}")
-                    return {}
-                    
-        except Exception as e:
-            logger.error(f"Error extracting metadata: {e}")
-            return {}
-        finally:
-            try:
-                if 'input_path' in locals():
-                    os.unlink(input_path)
-            except:
-                pass
+            os.unlink(input_path)
+        except:
+            pass
+            
+        return result
     
     def _parse_metadata(self, ffprobe_output: Dict[str, Any], media_info: MediaInfo) -> Dict[str, Any]:
         """Parse ffprobe output into structured metadata"""

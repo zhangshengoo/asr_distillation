@@ -11,7 +11,6 @@ from abc import ABC, abstractmethod
 import numpy as np
 import torch
 import torchaudio
-from loguru import logger
 from silero_vad import load_silero_vad, get_speech_timestamps
 
 from ray import remote
@@ -64,14 +63,9 @@ class VADModelManager:
     def load_model(self, config: Dict[str, Any]) -> None:
         """加载VAD模型"""
         if self._model is None or self._config != config:
-            try:
-                # 不使用ONNX，使用PyTorch模型
-                self._model = load_silero_vad(onnx=False)
-                self._config = config
-                logger.info("VAD模型加载成功（PyTorch版本）")
-            except Exception as e:
-                logger.error(f"VAD模型加载失败: {e}")
-                raise
+            # 不使用ONNX，使用PyTorch模型
+            self._model = load_silero_vad(onnx=False)
+            self._config = config
     
     def get_model(self):
         """获取VAD模型"""
@@ -108,7 +102,7 @@ class VADCache:
                     data = json.load(f)
                 return VADResult(**data)
             except Exception as e:
-                logger.warning(f"读取VAD缓存失败: {e}")
+                pass
         return None
     
     def put(self, audio_data: np.ndarray, config: Dict[str, Any], result: VADResult) -> None:
@@ -123,7 +117,7 @@ class VADCache:
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump(asdict(result), f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"保存VAD缓存失败: {e}")
+            pass
     
     def _evict_if_needed(self) -> None:
         """如果需要，清理旧缓存"""
@@ -139,14 +133,11 @@ class VADCache:
                 total_size -= cache_file.stat().st_size
                 if total_size <= self.max_size_bytes * 0.8:  # 保留20%空间
                     break
-            
-            logger.info(f"VAD缓存清理完成，当前大小: {total_size / 1024 / 1024:.1f} MB")
     
     def clear(self) -> None:
         """清空所有缓存"""
         for cache_file in self.cache_dir.glob("*.json"):
             cache_file.unlink()
-        logger.info("VAD缓存已清空")
 
 
 class VADProcessor:
@@ -177,63 +168,56 @@ class VADProcessor:
     def process_audio(self, file_id: str, audio_data: np.ndarray, 
                      sample_rate: int) -> VADResult:
         """处理单个音频文件"""
-        try:
-            # 重采样到目标采样率
-            if sample_rate != self.vad_params['sampling_rate']:
-                audio_tensor = torch.from_numpy(audio_data).float()
-                if len(audio_tensor.shape) == 1:
-                    audio_tensor = audio_tensor.unsqueeze(0)
-                
-                resampler = torchaudio.transforms.Resample(
-                    orig_freq=sample_rate,
-                    new_freq=self.vad_params['sampling_rate']
-                )
-                audio_tensor = resampler(audio_tensor)
-                audio_data = audio_tensor.squeeze().numpy()
-                sample_rate = self.vad_params['sampling_rate']
+        # 重采样到目标采样率
+        if sample_rate != self.vad_params['sampling_rate']:
+            audio_tensor = torch.from_numpy(audio_data).float()
+            if len(audio_tensor.shape) == 1:
+                audio_tensor = audio_tensor.unsqueeze(0)
             
-            # 检查缓存
-            if self.config.get('cache_enabled', True):
-                cached_result = self.cache.get(audio_data, self.vad_params)
-                if cached_result:
-                    logger.debug(f"使用VAD缓存结果: {file_id}")
-                    return cached_result
-            
-            # 执行VAD检测
-            model = self.model_manager.get_model()
-            speech_timestamps = get_speech_timestamps(
-                audio_data,
-                model,
-                **self.vad_params
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate,
+                new_freq=self.vad_params['sampling_rate']
             )
-            
-            # 计算统计信息
-            original_duration = len(audio_data) / sample_rate
-            total_speech_duration = sum(
-                seg['end'] - seg['start'] for seg in speech_timestamps
-            )
-            speech_ratio = total_speech_duration / original_duration if original_duration > 0 else 0
-            
-            # 构建结果
-            result = VADResult(
-                file_id=file_id,
-                speech_segments=speech_timestamps,
-                total_speech_duration=total_speech_duration,
-                speech_ratio=speech_ratio,
-                original_duration=original_duration,
-                sample_rate=sample_rate
-            )
-            
-            # 缓存结果
-            if self.config.get('cache_enabled', True):
-                self.cache.put(audio_data, self.vad_params, result)
-            
-            logger.info(f"VAD处理完成: {file_id}, 语音占比: {speech_ratio:.2%}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"VAD处理失败 {file_id}: {e}")
-            raise
+            audio_tensor = resampler(audio_tensor)
+            audio_data = audio_tensor.squeeze().numpy()
+            sample_rate = self.vad_params['sampling_rate']
+        
+        # 检查缓存
+        if self.config.get('cache_enabled', True):
+            cached_result = self.cache.get(audio_data, self.vad_params)
+            if cached_result:
+                return cached_result
+        
+        # 执行VAD检测
+        model = self.model_manager.get_model()
+        speech_timestamps = get_speech_timestamps(
+            audio_data,
+            model,
+            **self.vad_params
+        )
+        
+        # 计算统计信息
+        original_duration = len(audio_data) / sample_rate
+        total_speech_duration = sum(
+            seg['end'] - seg['start'] for seg in speech_timestamps
+        )
+        speech_ratio = total_speech_duration / original_duration if original_duration > 0 else 0
+        
+        # 构建结果
+        result = VADResult(
+            file_id=file_id,
+            speech_segments=speech_timestamps,
+            total_speech_duration=total_speech_duration,
+            speech_ratio=speech_ratio,
+            original_duration=original_duration,
+            sample_rate=sample_rate
+        )
+        
+        # 缓存结果
+        if self.config.get('cache_enabled', True):
+            self.cache.put(audio_data, self.vad_params, result)
+        
+        return result
     
     def segment_audio(self, file_id: str, audio_data: np.ndarray, 
                      sample_rate: int, vad_result: VADResult) -> List[AudioSegment]:
@@ -263,7 +247,6 @@ class VADProcessor:
                 )
                 segments.append(audio_segment)
         
-        logger.info(f"音频切分完成: {file_id}, 生成 {len(segments)} 个语音片段")
         return segments
     
     def batch_process(self, audio_batch: List[Tuple[str, np.ndarray, int]]) -> List[VADResult]:
@@ -275,7 +258,6 @@ class VADProcessor:
                 result = self.process_audio(file_id, audio_data, sample_rate)
                 results.append(result)
             except Exception as e:
-                logger.error(f"批量VAD处理失败 {file_id}: {e}")
                 # 创建空结果，保持批次完整性
                 results.append(VADResult(
                     file_id=file_id,
@@ -296,9 +278,6 @@ class TimestampManager:
     def map_asr_to_timestamps(segments: List[AudioSegment], 
                              asr_results: List[str]) -> List[ASRResult]:
         """将ASR结果映射到时间戳"""
-        if len(segments) != len(asr_results):
-            logger.warning(f"片段数量({len(segments)})与ASR结果数量({len(asr_results)})不匹配")
-        
         results = []
         for i, segment in enumerate(segments):
             transcription = asr_results[i] if i < len(asr_results) else ""

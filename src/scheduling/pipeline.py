@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 import ray
 from ray import data
 from ray.util.queue import Queue
-from loguru import logger
 
 
 @dataclass
@@ -92,7 +91,6 @@ class DataProducer:
             if max_batches and len(batches) >= max_batches:
                 break
                 
-        logger.info(f"Produced {len(batches)} batches")
         return batches
     
     def mark_processed(self, file_ids: List[str]) -> None:
@@ -119,7 +117,6 @@ class PipelineWorker:
             result.metadata['processed_at'] = time.time()
             return result
         except Exception as e:
-            logger.error(f"Worker {self.worker_id} failed to process batch {batch.batch_id}: {e}")
             batch.metadata['error'] = str(e)
             batch.metadata['failed_worker'] = self.worker_id
             return batch
@@ -148,7 +145,6 @@ class DistributedPipeline:
             data_loader_config,
             self.config.batch_size
         )
-        logger.info("Data producer setup complete")
     
     def setup_cpu_workers(self, 
                          stage_class: type,
@@ -172,7 +168,6 @@ class DistributedPipeline:
             
         self.stage_workers[stage_name] = workers
         self.stage_queues[stage_name] = Queue()
-        logger.info(f"Setup {len(workers)} CPU workers for stage {stage_name}")
     
     def setup_gpu_workers(self,
                          stage_class: type, 
@@ -196,7 +191,6 @@ class DistributedPipeline:
             
         self.stage_workers[stage_name] = workers
         self.stage_queues[stage_name] = Queue()
-        logger.info(f"Setup {len(workers)} GPU workers for stage {stage_name}")
     
     def run_pipeline(self, 
                     max_batches: Optional[int] = None,
@@ -209,12 +203,10 @@ class DistributedPipeline:
             raise ValueError("No workers setup. Call setup_cpu_workers() or setup_gpu_workers() first.")
         
         # Produce batches
-        logger.info("Starting data production...")
         batch_futures = self.producer.produce_batches.remote(max_batches)
         batches = ray.get(batch_futures)
         
         if not batches:
-            logger.warning("No batches to process")
             return []
         
         # Process batches through pipeline stages
@@ -236,7 +228,6 @@ class DistributedPipeline:
                 progress_callback(i + 1, len(batches))
         
         # Wait for all results
-        logger.info("Waiting for batch processing to complete...")
         processed_batches = ray.get(results)
         
         # Mark processed files
@@ -248,7 +239,6 @@ class DistributedPipeline:
         if processed_file_ids:
             self.producer.mark_processed.remote(processed_file_ids)
         
-        logger.info(f"Pipeline completed. Processed {len(processed_batches)} batches")
         return processed_batches
     
     def run_multi_stage_pipeline(self, 
@@ -265,14 +255,11 @@ class DistributedPipeline:
         if len(stages_config) < 1:
             raise ValueError("At least one stage must be configured.")
         
-        logger.info(f"Starting multi-stage pipeline with {len(stages_config)} stages")
-        
         # Produce batches
         batch_futures = self.producer.produce_batches.remote(max_batches)
         batches = ray.get(batch_futures)
         
         if not batches:
-            logger.warning("No batches to process")
             return []
         
         # Process batches through all stages sequentially
@@ -284,10 +271,8 @@ class DistributedPipeline:
             workers = self.stage_workers.get(stage_name, [])
             
             if not workers:
-                logger.error(f"No workers found for stage {stage_name}")
                 continue
             
-            logger.info(f"Processing stage {stage_idx + 1}/{len(stages_config)}: {stage_name}")
             stage_start_time = time.time()
             
             # Process current batches through this stage
@@ -304,7 +289,6 @@ class DistributedPipeline:
             current_batches = ray.get(stage_results)
             
             stage_duration = time.time() - stage_start_time
-            logger.info(f"Stage {stage_name} completed in {stage_duration:.2f}s")
             
             # Update progress callback
             if progress_callback:
@@ -320,7 +304,6 @@ class DistributedPipeline:
         if processed_file_ids:
             self.producer.mark_processed.remote(processed_file_ids)
         
-        logger.info(f"Multi-stage pipeline completed. Processed {len(current_batches)} batches")
         return current_batches
     
     def get_pipeline_stats(self) -> Dict[str, Any]:
@@ -344,7 +327,6 @@ class DistributedPipeline:
         """Shutdown the pipeline"""
         if ray.is_initialized():
             ray.shutdown()
-        logger.info("Pipeline shutdown complete")
 
 
 class PipelineOrchestrator:
@@ -412,8 +394,6 @@ class PipelineOrchestrator:
                               if stage_type == 'cpu' 
                               else self.pipeline_config.num_gpu_workers)
             
-            logger.info(f"Setting up {stage_name} with {num_workers} {stage_type} workers")
-            
             if stage_type == 'cpu':
                 self.pipeline.setup_cpu_workers(
                     stage_class, stage_params, num_workers=num_workers, stage_name=stage_name
@@ -424,8 +404,6 @@ class PipelineOrchestrator:
                 )
             else:
                 raise ValueError(f"Unknown stage type: {stage_type}")
-        
-        logger.info(f"Multi-stage pipeline setup complete with {len(self.stages_config)} stages")
     
     def run(self, 
             max_batches: Optional[int] = None,

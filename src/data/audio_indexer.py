@@ -12,7 +12,6 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import webdataset as wds
-from loguru import logger
 
 
 @dataclass
@@ -106,7 +105,6 @@ class ParquetIndexer(AudioIndexer):
         """Save index to parquet file"""
         index_file = self.index_path / "audio_index.parquet"
         df.to_parquet(index_file, index=False)
-        logger.info(f"Saved {len(df)} audio records to {index_file}")
 
 
 class WebDatasetBuilder:
@@ -135,8 +133,6 @@ class WebDatasetBuilder:
                 }
                 
                 shard_writer.write(sample)
-                
-        logger.info(f"Created WebDataset shards in {output_path}")
 
 
 class MediaCache:
@@ -155,7 +151,7 @@ class MediaCache:
                 with open(self.cache_index_file, 'r') as f:
                     return json.load(f)
             except Exception as e:
-                logger.warning(f"加载缓存索引失败: {e}")
+                pass
         return {}
     
     def _save_cache_index(self, index: Dict[str, Dict[str, Any]]) -> None:
@@ -164,7 +160,7 @@ class MediaCache:
             with open(self.cache_index_file, 'w') as f:
                 json.dump(index, f, indent=2, default=str)
         except Exception as e:
-            logger.error(f"保存缓存索引失败: {e}")
+            pass
     
     def _get_cache_size(self) -> int:
         """获取缓存总大小"""
@@ -192,8 +188,6 @@ class MediaCache:
                 current_size -= file_path.stat().st_size
                 if current_size <= self.max_size_bytes * 0.8:  # Leave 20% headroom
                     break
-                    
-            logger.info(f"Evicted cache files, new size: {current_size / 1024 / 1024:.1f} MB")
     
     def get(self, file_id: str) -> Optional[Path]:
         """Get cached file path"""

@@ -5,7 +5,6 @@ from typing import Dict, List, Any
 from dataclasses import dataclass
 
 import ray
-from loguru import logger
 
 from src.compute.audio_processor import PipelineStage
 from src.scheduling.pipeline import DataBatch
@@ -39,80 +38,46 @@ class SegmentExpansionStage(PipelineStage):
         start_time = time.time()
         segment_items = []
         
-        try:
-            for item in batch.items:
-                file_id = item.get('file_id')
+        for item in batch.items:
+            file_id = item.get('file_id')
+            
+            # 处理错误情况 - 不处理有错误的项目，直接跳过
+            if 'error' in item:
+                continue  # 不将错误项目加入结果
                 
-                # 处理错误情况
-                if 'error' in item:
-                    segment_items.append({
-                        'file_id': file_id,
-                        'error': item['error'],
-                        'segment_id': f"{file_id}_error"
-                    })
-                    continue
+            # 检查是否有segments
+            segments = item.get('segments', [])
+            if not segments:
+                continue  # 没有有效segments的项目也不加入结果
                 
-                # 检查是否有segments
-                segments = item.get('segments', [])
-                if not segments:
-                    logger.warning(f"文件 {file_id} 没有有效的segments")
-                    segment_items.append({
-                        'file_id': file_id,
-                        'error': 'No valid segments found',
-                        'segment_id': f"{file_id}_no_segments"
-                    })
-                    continue
-                
-                # 展开segments
-                valid_segments = self._filter_segments(segments)
-                for i, segment in enumerate(valid_segments):
-                    segment_item = self._create_segment_item(item, segment, i)
-                    segment_items.append(segment_item)
-                
-                # 更新统计信息
-                self.stats['processed_files'] += 1
-                self.stats['total_segments'] += len(segments)
-                self.stats['filtered_segments'] += len(segments) - len(valid_segments)
+            # 展开segments
+            valid_segments = self._filter_segments(segments)
+            for i, segment in enumerate(valid_segments):
+                segment_item = self._create_segment_item(item, segment, i)
+                segment_items.append(segment_item)
             
-            # 更新处理时间
-            self.stats['processing_time'] += time.time() - start_time
-            
-            # 记录处理统计
-            logger.info(f"Segment展开完成: {self.stats['processed_files']}个文件, "
-                       f"{len(segment_items)}个segments, "
-                       f"过滤 {self.stats['filtered_segments']}个segments")
-            
-            # 创建新的批次
-            new_batch = DataBatch(
-                batch_id=f"{batch.batch_id}_expanded",
-                items=segment_items,
-                metadata={
-                    **batch.metadata,
-                    'stage': 'segment_expansion',
-                    'original_batch_size': len(batch.items),
-                    'expanded_batch_size': len(segment_items),
-                    'expansion_ratio': len(segment_items) / len(batch.items) if batch.items else 0
-                }
-            )
-            
-            return new_batch
-            
-        except Exception as e:
-            logger.error(f"Segment展开失败: {e}")
-            # 返回错误批次
-            error_items = []
-            for item in batch.items:
-                error_items.append({
-                    'file_id': item.get('file_id'),
-                    'error': f"Segment expansion failed: {str(e)}",
-                    'segment_id': f"{item.get('file_id')}_expansion_error"
-                })
-            
-            return DataBatch(
-                batch_id=f"{batch.batch_id}_expansion_error",
-                items=error_items,
-                metadata={**batch.metadata, 'stage': 'segment_expansion_error'}
-            )
+            # 更新统计信息
+            self.stats['processed_files'] += 1
+            self.stats['total_segments'] += len(segments)
+            self.stats['filtered_segments'] += len(segments) - len(valid_segments)
+        
+        # 更新处理时间
+        self.stats['processing_time'] += time.time() - start_time
+        
+        # 创建新的批次
+        new_batch = DataBatch(
+            batch_id=f"{batch.batch_id}_expanded",
+            items=segment_items,
+            metadata={
+                **batch.metadata,
+                'stage': 'segment_expansion',
+                'original_batch_size': len(batch.items),
+                'expanded_batch_size': len(segment_items),
+                'expansion_ratio': len(segment_items) / len(batch.items) if batch.items else 0
+            }
+        )
+        
+        return new_batch
     
     def _filter_segments(self, segments: List[Any]) -> List[Any]:
         """过滤无效的segments"""
@@ -123,12 +88,10 @@ class SegmentExpansionStage(PipelineStage):
             
             # 检查时长范围 - 只过滤过短的segment
             if duration < self.min_segment_duration:
-                logger.debug(f"过滤过短segment: {duration:.2f}s < {self.min_segment_duration}s")
                 continue
             
             # 检查音频数据
             if not hasattr(segment, 'audio_data') or segment.audio_data is None:
-                logger.debug(f"过滤无音频数据的segment")
                 continue
             
             valid_segments.append(segment)
@@ -208,58 +171,36 @@ class SegmentAggregationStage(PipelineStage):
         """处理批次数据，聚合到文件级别"""
         start_time = time.time()
         
-        try:
-            # 按文件ID分组
-            file_groups = self._group_by_file(batch.items)
-            
-            # 聚合每个文件的结果
-            aggregated_items = []
-            for file_id, segments in file_groups.items():
-                aggregated_item = self._aggregate_file_results(file_id, segments)
+        # 按文件ID分组
+        file_groups = self._group_by_file(batch.items)
+        
+        # 聚合每个文件的结果
+        aggregated_items = []
+        for file_id, segments in file_groups.items():
+            aggregated_item = self._aggregate_file_results(file_id, segments)
+            # 只有在没有错误的情况下才添加到结果中
+            if 'error' not in aggregated_item:
                 aggregated_items.append(aggregated_item)
-            
-            # 更新统计信息
-            self.stats['processed_batches'] += 1
-            self.stats['aggregated_files'] += len(file_groups)
-            self.stats['total_segments'] += sum(len(segments) for segments in file_groups.values())
-            self.stats['processing_time'] += time.time() - start_time
-            
-            # 记录处理统计
-            logger.info(f"Segment聚合完成: {len(aggregated_items)}个文件, "
-                       f"{self.stats['total_segments']}个segments")
-            
-            # 创建新的批次
-            new_batch = DataBatch(
-                batch_id=f"{batch.batch_id}_aggregated",
-                items=aggregated_items,
-                metadata={
-                    **batch.metadata,
-                    'stage': 'segment_aggregation',
-                    'aggregated_files': len(aggregated_items),
-                    'total_segments': self.stats['total_segments']
-                }
-            )
-            
-            return new_batch
-            
-        except Exception as e:
-            logger.error(f"Segment聚合失败: {e}")
-            # 返回错误批次
-            error_items = []
-            file_ids = set(item.get('file_id', 'unknown') for item in batch.items)
-            
-            for file_id in file_ids:
-                error_items.append({
-                    'file_id': file_id,
-                    'error': f"Segment aggregation failed: {str(e)}",
-                    'segments': []
-                })
-            
-            return DataBatch(
-                batch_id=f"{batch.batch_id}_aggregation_error",
-                items=error_items,
-                metadata={**batch.metadata, 'stage': 'segment_aggregation_error'}
-            )
+        
+        # 更新统计信息
+        self.stats['processed_batches'] += 1
+        self.stats['aggregated_files'] += len(aggregated_items)  # 只统计成功聚合的文件
+        self.stats['total_segments'] += sum(len(segments) for segments in file_groups.values())
+        self.stats['processing_time'] += time.time() - start_time
+        
+        # 创建新的批次
+        new_batch = DataBatch(
+            batch_id=f"{batch.batch_id}_aggregated",
+            items=aggregated_items,
+            metadata={
+                **batch.metadata,
+                'stage': 'segment_aggregation',
+                'aggregated_files': len(aggregated_items),
+                'total_segments': self.stats['total_segments']
+            }
+        )
+        
+        return new_batch
     
     def _group_by_file(self, items: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """按文件ID分组items"""

@@ -11,7 +11,6 @@ import psutil
 import ray
 
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
-from loguru import logger
 from src.config.manager import MonitoringConfig
 
 
@@ -36,7 +35,6 @@ class MetricsCollector:
         
         if config.enable_prometheus:
             start_http_server(config.prometheus_port)
-            logger.info(f"Prometheus metrics server started on port {config.prometheus_port}")
     
     def record_batch_processed(self, stage: str, processing_time: float, item_count: int) -> None:
         """Record batch processing metrics"""
@@ -69,21 +67,14 @@ class MetricsCollector:
     
     def _update_gpu_metrics(self) -> None:
         """Update GPU metrics"""
-        try:
-            import GPUtil
-            gpus = GPUtil.getGPUs()
-            
-            for gpu in gpus:
-                gpu_id = str(gpu.id)
-                self.gpu_utilization.labels(gpu_id=gpu_id).set(gpu.load * 100)
-                self.gpu_memory_used.labels(gpu_id=gpu_id).set(gpu.memoryUsed * 1024 * 1024)
-                self.gpu_memory_total.labels(gpu_id=gpu_id).set(gpu.memoryTotal * 1024 * 1024)
-                
-        except ImportError:
-            # GPUtil not available, skip GPU monitoring
-            pass
-        except Exception as e:
-            logger.error(f"Error updating GPU metrics: {e}")
+        import GPUtil
+        gpus = GPUtil.getGPUs()
+        
+        for gpu in gpus:
+            gpu_id = str(gpu.id)
+            self.gpu_utilization.labels(gpu_id=gpu_id).set(gpu.load * 100)
+            self.gpu_memory_used.labels(gpu_id=gpu_id).set(gpu.memoryUsed * 1024 * 1024)
+            self.gpu_memory_total.labels(gpu_id=gpu_id).set(gpu.memoryTotal * 1024 * 1024)
     
     def _update_ray_metrics(self) -> None:
         """Update Ray cluster metrics"""
@@ -97,7 +88,7 @@ class MetricsCollector:
             self.object_store_usage.set(total_spilled)
             
         except Exception as e:
-            logger.error(f"Error updating Ray metrics: {e}")
+            pass
 
 
 class CheckpointManager:
@@ -125,15 +116,12 @@ class CheckpointManager:
             with open(checkpoint_file, 'w') as f:
                 json.dump(checkpoint, f, indent=2)
             
-            logger.info(f"Saved checkpoint: {checkpoint_file}")
-            
             # Clean old checkpoints
             self._cleanup_old_checkpoints()
             
             return str(checkpoint_file)
             
         except Exception as e:
-            logger.error(f"Error saving checkpoint: {e}")
             raise
     
     def load_latest_checkpoint(self) -> Optional[Dict[str, Any]]:
@@ -150,11 +138,9 @@ class CheckpointManager:
             with open(latest_file, 'r') as f:
                 checkpoint = json.load(f)
             
-            logger.info(f"Loaded checkpoint: {latest_file}")
             return checkpoint
             
         except Exception as e:
-            logger.error(f"Error loading checkpoint: {e}")
             return None
     
     def _cleanup_old_checkpoints(self, keep_last: int = 5) -> None:
@@ -170,9 +156,8 @@ class CheckpointManager:
         for old_file in checkpoint_files[:-keep_last]:
             try:
                 old_file.unlink()
-                logger.debug(f"Removed old checkpoint: {old_file}")
             except Exception as e:
-                logger.error(f"Error removing old checkpoint {old_file}: {e}")
+                pass
 
 
 class FaultToleranceManager:
@@ -199,7 +184,6 @@ class FaultToleranceManager:
         }
         
         self.failed_tasks[task_id].append(failure_info)
-        logger.warning(f"Recorded failure for task {task_id} in stage {stage}: {error}")
     
     def can_retry(self, task_id: str) -> bool:
         """Check if a task can be retried"""
@@ -279,14 +263,12 @@ class MonitoringSystem:
         self.running = True
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
-        logger.info("Monitoring system started")
         
     def stop(self) -> None:
         """Stop the monitoring system"""
         self.running = False
         if self.monitor_thread:
             self.monitor_thread.join(timeout=5)
-        logger.info("Monitoring system stopped")
         
     def register_callback(self, event: str, callback: Callable) -> None:
         """Register a monitoring callback"""
@@ -298,7 +280,7 @@ class MonitoringSystem:
             try:
                 callback(data)
             except Exception as e:
-                logger.error(f"Error in monitoring callback: {e}")
+                pass
     
     def record_stage_performance(self, 
                                 stage: str,
@@ -397,7 +379,6 @@ class MonitoringSystem:
                 time.sleep(self.config.metrics_interval)
                 
             except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
                 time.sleep(self.config.metrics_interval)
     
     def _health_check(self) -> None:
@@ -406,8 +387,6 @@ class MonitoringSystem:
         for stage in self.stage_performance:
             stats = self.get_stage_stats(stage)
             if stats.get('success_rate', 1.0) < 0.9:  # Less than 90% success rate
-                logger.warning(f"Stage {stage} has low success rate: {stats['success_rate']:.2%}")
-                
                 # Trigger health alert callback
                 self._trigger_callbacks('health_alert', {
                     'type': 'low_success_rate',
@@ -418,7 +397,6 @@ class MonitoringSystem:
         # Check system resources
         memory_percent = psutil.virtual_memory().percent
         if memory_percent > 90:
-            logger.warning(f"High memory usage: {memory_percent:.1f}%")
             self._trigger_callbacks('health_alert', {
                 'type': 'high_memory_usage',
                 'memory_percent': memory_percent
@@ -432,10 +410,8 @@ class MonitoringSystem:
             with open(output_path, 'w') as f:
                 json.dump(stats, f, indent=2)
                 
-            logger.info(f"Exported metrics to {output_path}")
-            
         except Exception as e:
-            logger.error(f"Error exporting metrics: {e}")
+            pass
 
 
 class AlertManager:
@@ -462,8 +438,6 @@ class AlertManager:
                 
                 triggered_alerts.append(alert)
                 self.alert_history.append(alert)
-                
-                logger.warning(f"Alert triggered: {rule['name']} - {alert['message']}")
         
         return triggered_alerts
     
@@ -499,7 +473,6 @@ class AlertManager:
             return False
             
         except Exception as e:
-            logger.error(f"Error evaluating alert rule {rule.get('name', 'unknown')}: {e}")
             return False
     
     def _get_metric_value(self, stats: Dict[str, Any], path: str) -> Optional[float]:
