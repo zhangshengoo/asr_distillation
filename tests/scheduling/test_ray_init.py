@@ -394,6 +394,359 @@ class TestRayInitialization:
                 ray.shutdown()
 
 
+class TestMonitoringSystemInteraction:
+    """测试MonitoringSystem与Ray初始化交互的测试类"""
+    
+    def setup_method(self):
+        """每个测试方法执行前的设置"""
+        # 确保Ray未初始化
+        if ray.is_initialized():
+            ray.shutdown()
+    
+    def teardown_method(self):
+        """每个测试方法执行后的清理"""
+        # 确保Ray已关闭
+        if ray.is_initialized():
+            ray.shutdown()
+    
+    def test_monitoring_system_before_ray_init(self):
+        """测试在Ray初始化之前启动MonitoringSystem"""
+        print("\n=== 测试在Ray初始化之前启动MonitoringSystem ===")
+        
+        try:
+            from src.monitoring.system import MonitoringSystem
+            from src.config.manager import MonitoringConfig
+            
+            # 创建测试配置
+            config = MonitoringConfig(
+                enable_prometheus=False,  # 测试环境不启用Prometheus
+                prometheus_port=8001,
+                metrics_interval=1.0,
+                enable_gpu_monitoring=False,
+                enable_ray_monitoring=False,
+                checkpoint_interval=10,
+                checkpoint_dir="./tests/test_data/checkpoints"
+            )
+            
+            print("创建MonitoringSystem...")
+            monitoring_system = MonitoringSystem(config)
+            
+            print("启动MonitoringSystem...")
+            start_time = time.time()
+            monitoring_system.start()
+            monitoring_start_time = time.time() - start_time
+            print(f"MonitoringSystem启动成功，耗时: {monitoring_start_time:.2f}秒")
+            
+            # 等待一下确保监控系统稳定
+            time.sleep(2)
+            
+            print("初始化Ray...")
+            start_time = time.time()
+            ray.init()
+            ray_init_time = time.time() - start_time
+            print(f"Ray初始化成功，耗时: {ray_init_time:.2f}秒")
+            
+            # 停止监控系统
+            monitoring_system.stop()
+            
+        except Exception as e:
+            print(f"测试失败: {e}")
+            raise
+    
+    def test_ray_init_before_monitoring_system(self):
+        """测试在Ray初始化之后启动MonitoringSystem"""
+        print("\n=== 测试在Ray初始化之后启动MonitoringSystem ===")
+        
+        try:
+            from src.monitoring.system import MonitoringSystem
+            from src.config.manager import MonitoringConfig
+            
+            print("初始化Ray...")
+            start_time = time.time()
+            ray.init()
+            ray_init_time = time.time() - start_time
+            print(f"Ray初始化成功，耗时: {ray_init_time:.2f}秒")
+            
+            # 创建测试配置
+            config = MonitoringConfig(
+                enable_prometheus=False,  # 测试环境不启用Prometheus
+                prometheus_port=8001,
+                metrics_interval=1.0,
+                enable_gpu_monitoring=False,
+                enable_ray_monitoring=True,  # 启用Ray监控
+                checkpoint_interval=10,
+                checkpoint_dir="./tests/test_data/checkpoints"
+            )
+            
+            print("创建MonitoringSystem...")
+            monitoring_system = MonitoringSystem(config)
+            
+            print("启动MonitoringSystem...")
+            start_time = time.time()
+            monitoring_system.start()
+            monitoring_start_time = time.time() - start_time
+            print(f"MonitoringSystem启动成功，耗时: {monitoring_start_time:.2f}秒")
+            
+            # 等待一下确保监控系统稳定
+            time.sleep(2)
+            
+            # 停止监控系统
+            monitoring_system.stop()
+            
+        except Exception as e:
+            print(f"测试失败: {e}")
+            raise
+        finally:
+            if ray.is_initialized():
+                ray.shutdown()
+    
+    def test_monitoring_system_with_ray_monitoring(self):
+        """测试MonitoringSystem的Ray监控功能"""
+        print("\n=== 测试MonitoringSystem的Ray监控功能 ===")
+        
+        try:
+            from src.monitoring.system import MonitoringSystem
+            from src.config.manager import MonitoringConfig
+            
+            print("初始化Ray...")
+            ray.init()
+            
+            # 创建启用Ray监控的配置
+            config = MonitoringConfig(
+                enable_prometheus=False,
+                prometheus_port=8001,
+                metrics_interval=1.0,
+                enable_gpu_monitoring=False,
+                enable_ray_monitoring=True,  # 启用Ray监控
+                checkpoint_interval=10,
+                checkpoint_dir="./tests/test_data/checkpoints"
+            )
+            
+            print("创建并启动MonitoringSystem...")
+            monitoring_system = MonitoringSystem(config)
+            monitoring_system.start()
+            
+            # 等待监控系统收集一些指标
+            print("等待监控系统收集指标...")
+            time.sleep(3)
+            
+            # 获取系统统计信息
+            print("获取系统统计信息...")
+            stats = monitoring_system.get_system_stats()
+            print(f"系统统计: {stats}")
+            
+            # 停止监控系统
+            monitoring_system.stop()
+            
+        except Exception as e:
+            print(f"测试失败: {e}")
+            raise
+        finally:
+            if ray.is_initialized():
+                ray.shutdown()
+    
+    def test_monitoring_system_with_prometheus(self):
+        """测试MonitoringSystem的Prometheus功能"""
+        print("\n=== 测试MonitoringSystem的Prometheus功能 ===")
+        
+        try:
+            from src.monitoring.system import MonitoringSystem
+            from src.config.manager import MonitoringConfig
+            
+            # 创建启用Prometheus的配置
+            config = MonitoringConfig(
+                enable_prometheus=True,  # 启用Prometheus
+                prometheus_port=8001,    # 使用不同的端口
+                metrics_interval=1.0,
+                enable_gpu_monitoring=False,
+                enable_ray_monitoring=False,
+                checkpoint_interval=10,
+                checkpoint_dir="./tests/test_data/checkpoints"
+            )
+            
+            print("创建并启动MonitoringSystem（启用Prometheus）...")
+            monitoring_system = MonitoringSystem(config)
+            
+            start_time = time.time()
+            monitoring_system.start()
+            monitoring_start_time = time.time() - start_time
+            print(f"MonitoringSystem启动成功，耗时: {monitoring_start_time:.2f}秒")
+            
+            # 等待Prometheus服务器启动
+            time.sleep(2)
+            
+            print("初始化Ray...")
+            start_time = time.time()
+            ray.init()
+            ray_init_time = time.time() - start_time
+            print(f"Ray初始化成功，耗时: {ray_init_time:.2f}秒")
+            
+            # 停止监控系统
+            monitoring_system.stop()
+            
+        except Exception as e:
+            print(f"测试失败: {e}")
+            raise
+        finally:
+            if ray.is_initialized():
+                ray.shutdown()
+    
+    def test_monitoring_system_thread_safety(self):
+        """测试MonitoringSystem的线程安全性"""
+        print("\n=== 测试MonitoringSystem的线程安全性 ===")
+        
+        try:
+            from src.monitoring.system import MonitoringSystem
+            from src.config.manager import MonitoringConfig
+            import threading
+            
+            print("初始化Ray...")
+            ray.init()
+            
+            # 创建测试配置
+            config = MonitoringConfig(
+                enable_prometheus=False,
+                prometheus_port=8001,
+                metrics_interval=0.5,  # 较短的间隔
+                enable_gpu_monitoring=False,
+                enable_ray_monitoring=True,
+                checkpoint_interval=10,
+                checkpoint_dir="./tests/test_data/checkpoints"
+            )
+            
+            print("创建MonitoringSystem...")
+            monitoring_system = MonitoringSystem(config)
+            
+            # 启动监控系统
+            monitoring_system.start()
+            
+            # 在多个线程中同时访问监控系统
+            def worker_thread(thread_id):
+                for i in range(5):
+                    try:
+                        stats = monitoring_system.get_system_stats()
+                        print(f"线程 {thread_id} 获取统计信息: {len(stats)} 个字段")
+                        time.sleep(0.2)
+                    except Exception as e:
+                        print(f"线程 {thread_id} 出错: {e}")
+            
+            print("启动多个工作线程...")
+            threads = []
+            for i in range(3):
+                t = threading.Thread(target=worker_thread, args=(i,))
+                threads.append(t)
+                t.start()
+            
+            # 等待所有线程完成
+            for t in threads:
+                t.join()
+            
+            # 停止监控系统
+            monitoring_system.stop()
+            
+        except Exception as e:
+            print(f"测试失败: {e}")
+            raise
+        finally:
+            if ray.is_initialized():
+                ray.shutdown()
+    
+    def test_main_pipeline_scenario(self):
+        """测试主要的pipeline场景，复现main.py中的问题"""
+        print("\n=== 测试主要的pipeline场景 ===")
+        
+        try:
+            from src.monitoring.system import MonitoringSystem
+            from src.config.manager import MonitoringConfig, ConfigManager
+            
+            # 加载测试配置
+            config_file = "tests/config_test.yaml"
+            config_manager = ConfigManager(config_file)
+            config = config_manager.load_config()
+            
+            print("加载测试配置成功")
+            
+            # 初始化监控系统（模拟main.py中的顺序）
+            print("初始化监控系统...")
+            monitoring_config = MonitoringConfig(**config.monitoring.__dict__)
+            monitoring_system = MonitoringSystem(monitoring_config)
+            
+            start_time = time.time()
+            monitoring_system.start()
+            monitoring_start_time = time.time() - start_time
+            print(f"监控系统启动成功，耗时: {monitoring_start_time:.2f}秒")
+            
+            # 等待监控系统稳定
+            time.sleep(2)
+            
+            # 初始化Ray（模拟main.py中的顺序）
+            print("初始化Ray...")
+            if not ray.is_initialized():
+                start_time = time.time()
+                ray.init(
+                    object_store_memory=config.pipeline.object_store_memory,
+                    ignore_reinit_error=True
+                )
+                ray_init_time = time.time() - start_time
+                print(f"Ray初始化成功，耗时: {ray_init_time:.2f}秒")
+            
+            # 停止监控系统
+            monitoring_system.stop()
+            
+        except Exception as e:
+            print(f"测试失败: {e}")
+            raise
+        finally:
+            if ray.is_initialized():
+                ray.shutdown()
+    
+    def test_reverse_order_scenario(self):
+        """测试反向顺序：先Ray后MonitoringSystem"""
+        print("\n=== 测试反向顺序场景 ===")
+        
+        try:
+            from src.monitoring.system import MonitoringSystem
+            from src.config.manager import MonitoringConfig, ConfigManager
+            
+            # 加载测试配置
+            config_file = "tests/config_test.yaml"
+            config_manager = ConfigManager(config_file)
+            config = config_manager.load_config()
+            
+            print("加载测试配置成功")
+            
+            # 先初始化Ray
+            print("先初始化Ray...")
+            if not ray.is_initialized():
+                start_time = time.time()
+                ray.init(
+                    object_store_memory=config.pipeline.object_store_memory,
+                    ignore_reinit_error=True
+                )
+                ray_init_time = time.time() - start_time
+                print(f"Ray初始化成功，耗时: {ray_init_time:.2f}秒")
+            
+            # 再初始化监控系统
+            print("再初始化监控系统...")
+            monitoring_config = MonitoringConfig(**config.monitoring.__dict__)
+            monitoring_system = MonitoringSystem(monitoring_config)
+            
+            start_time = time.time()
+            monitoring_system.start()
+            monitoring_start_time = time.time() - start_time
+            print(f"监控系统启动成功，耗时: {monitoring_start_time:.2f}秒")
+            
+            # 停止监控系统
+            monitoring_system.stop()
+            
+        except Exception as e:
+            print(f"测试失败: {e}")
+            raise
+        finally:
+            if ray.is_initialized():
+                ray.shutdown()
+
+
 def run_diagnostic_tests():
     """运行诊断测试的主函数"""
     print("开始Ray初始化诊断测试...")
@@ -402,22 +755,44 @@ def run_diagnostic_tests():
     print(f"系统平台: {psutil.sys.platform}")
     print(f"CPU架构: {psutil.sys.architecture}")
     
-    # 运行测试
+    # 运行基础Ray初始化测试
+    print("\n" + "="*60)
+    print("基础Ray初始化测试")
+    print("="*60)
+    
     test_instance = TestRayInitialization()
     
-    tests = [
+    basic_tests = [
         test_instance.test_basic_ray_init,
         test_instance.test_ray_init_with_object_store_memory,
         test_instance.test_ray_init_with_test_config,
         test_instance.test_ray_init_with_timeout,
-        test_instance.test_ray_init_environment_variables,
-        test_instance.test_system_resources_impact,
-        test_instance.test_ray_init_with_address,
-        test_instance.test_ray_init_logging,
-        test_instance.test_ray_init_with_test_config_mock,
     ]
     
-    for test in tests:
+    for test in basic_tests:
+        try:
+            test()
+        except Exception as e:
+            print(f"测试失败: {test.__name__}, 错误: {e}")
+        print("-" * 50)
+    
+    # 运行MonitoringSystem交互测试
+    print("\n" + "="*60)
+    print("MonitoringSystem交互测试")
+    print("="*60)
+    
+    monitoring_test_instance = TestMonitoringSystemInteraction()
+    
+    monitoring_tests = [
+        monitoring_test_instance.test_monitoring_system_before_ray_init,
+        monitoring_test_instance.test_ray_init_before_monitoring_system,
+        monitoring_test_instance.test_monitoring_system_with_ray_monitoring,
+        monitoring_test_instance.test_monitoring_system_with_prometheus,
+        monitoring_test_instance.test_main_pipeline_scenario,
+        monitoring_test_instance.test_reverse_order_scenario,
+    ]
+    
+    for test in monitoring_tests:
         try:
             test()
         except Exception as e:
