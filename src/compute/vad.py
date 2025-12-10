@@ -83,15 +83,25 @@ class VADCache:
         self.max_size_bytes = int(max_size_gb * 1024 * 1024 * 1024)
         self.cache_index_file = self.cache_dir / "vad_cache_index.json"
         
-    def _get_cache_key(self, audio_data: np.ndarray, config: Dict[str, Any]) -> str:
+    def _get_cache_key(self, audio_data: Union[np.ndarray, torch.Tensor], config: Dict[str, Any]) -> str:
         """生成缓存键"""
         # 使用音频数据和配置的哈希值作为缓存键
-        audio_hash = hashlib.md5(audio_data.tobytes()).hexdigest()
+        # 处理PyTorch Tensor和numpy数组
+        if isinstance(audio_data, torch.Tensor):
+            audio_data_np = audio_data.detach().cpu().numpy()
+        else:
+            audio_data_np = audio_data
+        
+        # 对大音频文件采样以提高性能
+        if len(audio_data_np) > 160000:  # 超过10秒时采样前10秒 (假设采样率是16000)
+            audio_data_np = audio_data_np[:160000]
+        
+        audio_hash = hashlib.md5(audio_data_np.tobytes()).hexdigest()
         config_str = json.dumps(config, sort_keys=True)
         config_hash = hashlib.md5(config_str.encode()).hexdigest()
         return f"{audio_hash}_{config_hash}"
     
-    def get(self, audio_data: np.ndarray, config: Dict[str, Any]) -> Optional[VADResult]:
+    def get(self, audio_data: Union[np.ndarray, torch.Tensor], config: Dict[str, Any]) -> Optional[VADResult]:
         """获取缓存的VAD结果"""
         cache_key = self._get_cache_key(audio_data, config)
         cache_file = self.cache_dir / f"{cache_key}.json"
@@ -105,7 +115,7 @@ class VADCache:
                 pass
         return None
     
-    def put(self, audio_data: np.ndarray, config: Dict[str, Any], result: VADResult) -> None:
+    def put(self, audio_data: Union[np.ndarray, torch.Tensor], config: Dict[str, Any], result: VADResult) -> None:
         """缓存VAD结果"""
         # 检查缓存大小
         self._evict_if_needed()
