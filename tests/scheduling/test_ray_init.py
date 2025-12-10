@@ -402,12 +402,30 @@ class TestMonitoringSystemInteraction:
         # 确保Ray未初始化
         if ray.is_initialized():
             ray.shutdown()
+        
+        # 清理Prometheus指标注册表，避免重复注册
+        self._cleanup_prometheus_metrics()
     
     def teardown_method(self):
         """每个测试方法执行后的清理"""
         # 确保Ray已关闭
         if ray.is_initialized():
             ray.shutdown()
+        
+        # 清理Prometheus指标注册表
+        self._cleanup_prometheus_metrics()
+    
+    def _cleanup_prometheus_metrics(self):
+        """清理Prometheus指标注册表"""
+        try:
+            from prometheus_client import REGISTRY, CollectorRegistry
+            # 创建新的注册表替换默认注册表
+            REGISTRY._collector_to_names.clear()
+            REGISTRY._names_to_collectors.clear()
+            REGISTRY._collectors.clear()
+        except Exception as e:
+            print(f"清理Prometheus指标时出错: {e}")
+            # 忽略清理错误，不影响测试
     
     def test_monitoring_system_before_ray_init(self):
         """测试在Ray初始化之前启动MonitoringSystem"""
