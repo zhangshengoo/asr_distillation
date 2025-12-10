@@ -9,6 +9,7 @@ import numpy as np
 
 from src.compute.vad import VADProcessor, AudioSegment, VADResult
 from src.compute.audio_processor import PipelineStage
+from src.scheduling.pipeline import DataBatch
 
 
 class VADProcessingStage(PipelineStage):
@@ -40,87 +41,70 @@ class VADProcessingStage(PipelineStage):
         
         self.vad_processor = VADProcessor(self.vad_config)
     
-    def process_batch(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def process(self, batch: DataBatch) -> DataBatch:
         """处理音频批次"""
         start_time = time.time()
         results = []
         
-        try:
-            # 准备音频数据
-            audio_batch = []
-            for item in batch:
-                file_id = item.get('file_id')
-                audio_data = item.get('audio_data')
-                sample_rate = item.get('sample_rate')
+        # 从batch.items中获取数据
+        for item in batch.items:
+            file_id = item.get('file_id')
+            
+            # 检查是否有错误 - 不处理有错误的项目，直接跳过
+            if 'error' in item:
+                continue  # 不将错误项目加入结果
                 
-                if audio_data is not None and sample_rate is not None:
-                    audio_batch.append((file_id, audio_data, sample_rate))
-                else:
-                    results.append({
-                        'file_id': file_id,
-                        'error': 'Invalid audio data',
-                        'segments': []
-                    })
+            # 处理音频数据
+            audio_data = item.get('audio_data')
+            sample_rate = item.get('sample_rate')
             
-            # 批量VAD处理
-            if audio_batch:
-                vad_results = self.vad_processor.batch_process(audio_batch)
-                
-                # 处理每个文件的VAD结果
-                for (file_id, audio_data, sample_rate), vad_result in zip(audio_batch, vad_results):
-                    try:
-                        # 根据VAD结果切分音频
-                        segments = self.vad_processor.segment_audio(
-                            file_id, audio_data, sample_rate, vad_result
-                        )
-                        
-                        # 构建输出结果
-                        result = {
-                            'file_id': file_id,
-                            'vad_result': vad_result,
-                            'segments': segments,
-                            'original_duration': vad_result.original_duration,
-                            'speech_ratio': vad_result.speech_ratio,
-                            'num_segments': len(segments)
-                        }
-                        
-                        results.append(result)
-                        
-                        # 更新统计信息
-                        self.stats['processed_files'] += 1
-                        self.stats['total_segments'] += len(segments)
-                        self.stats['total_speech_duration'] += vad_result.total_speech_duration
-                        
-                    except Exception as e:
-                        results.append({
-                            'file_id': file_id,
-                            'error': str(e),
-                            'segments': []
-                        })
+            # 验证音频数据有效性
+            assert audio_data is not None, f"Audio data is None for file {file_id}"
+            assert sample_rate is not None, f"Sample rate is None for file {file_id}"
             
-            # 更新处理时间
-            self.stats['processing_time'] += time.time() - start_time
+            # 执行VAD处理
+            vad_result = self.vad_processor.process_audio(file_id, audio_data, sample_rate)
             
-            # 记录批次统计
-            batch_size = len(batch)
-            total_segments = sum(r.get('num_segments', 0) for r in results)
+            # 根据VAD结果切分音频
+            segments = self.vad_processor.segment_audio(
+                file_id, audio_data, sample_rate, vad_result
+            )
             
-            return results
+            # 构建输出结果
+            result = {
+                'file_id': file_id,
+                'vad_result': vad_result,
+                'segments': segments,
+                'original_duration': vad_result.original_duration,
+                'speech_ratio': vad_result.speech_ratio,
+                'num_segments': len(segments),
+                # 继承原始项目中的其他字段
+                **{k: v for k, v in item.items() if k not in ['audio_data', 'sample_rate']}
+            }
             
-        except Exception as e:
-            # 返回错误结果，保持批次完整性
-            error_results = []
-            for item in batch:
-                error_results.append({
-                    'file_id': item.get('file_id'),
-                    'error': str(e),
-                    'segments': []
-                })
-            return error_results
+            results.append(result)
+            
+            # 更新统计信息
+            self.stats['processed_files'] += 1
+            self.stats['total_segments'] += len(segments)
+            self.stats['total_speech_duration'] += vad_result.total_speech_duration
     
-    def process(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """处理单个音频文件（用于单文件处理）"""
-        return self.process_batch([item])[0]
+        # 更新处理时间
+        self.stats['processing_time'] += time.time() - start_time
+        
+        # 创建新的DataBatch并返回
+        new_batch = DataBatch(
+            batch_id=f"{batch.batch_id}_vad_processed",
+            items=results,
+            metadata={
+                **batch.metadata,
+                'stage': 'vad_processing',
+                'processed_items': len(results),
+                'processing_time': self.stats['processing_time']
+            }
+        )
+        
+        return new_batch
     
     def get_stats(self) -> Dict[str, Any]:
         """获取处理统计信息"""
@@ -134,8 +118,10 @@ class VADProcessingStage(PipelineStage):
         
         # 获取VAD缓存统计
         if self.vad_processor and hasattr(self.vad_processor, 'cache'):
-            cache_stats = self.vad_processor.cache.get_cache_stats()
-            stats['cache_stats'] = cache_stats
+            # 检查cache对象是否有get_cache_stats方法
+            if hasattr(self.vad_processor.cache, 'get_cache_stats'):
+                cache_stats = self.vad_processor.cache.get_cache_stats()
+                stats['cache_stats'] = cache_stats
         
         return stats
     
