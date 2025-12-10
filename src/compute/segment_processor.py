@@ -110,11 +110,16 @@ class SegmentExpansionStage(PipelineStage):
             'segment_id': segment.segment_id,
             
             # Segment特定信息
-            'audio_data': segment.audio_data,
             'start_time': segment.start_time,
             'end_time': segment.end_time,
-            'duration': segment.duration,
-            'sample_rate': segment.sample_rate,
+            
+            # 为AudioFeatureStage创建audio_tensor格式
+            'audio_tensor': {
+                'waveform': segment.audio_data,
+                'sample_rate': segment.sample_rate,
+                'duration': segment.duration,
+                'format': 'tensor'
+            },
             
             # 原始文件信息
             'original_duration': segment.original_duration,
