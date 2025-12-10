@@ -83,18 +83,19 @@ async def run_pipeline(config_path: str,
         logger.info("Starting ASR Distillation Pipeline")
         logger.info(f"Configuration loaded from: {config_path}")
         
-        # Initialize monitoring system
-        monitoring_config = MonitoringConfig(**config.monitoring.__dict__)
-        monitoring_system = MonitoringSystem(monitoring_config)
-        monitoring_system.start()
-        
-        # Setup Ray
+        # Setup Ray first (before monitoring system to avoid conflicts)
         if not ray.is_initialized():
             ray.init(
                 object_store_memory=config.pipeline.object_store_memory,
                 ignore_reinit_error=True
             )
             logger.info("Ray cluster initialized")
+        
+        # Initialize monitoring system after Ray is ready
+        monitoring_config = MonitoringConfig(**config.monitoring.__dict__)
+        monitoring_system = MonitoringSystem(monitoring_config)
+        monitoring_system.start()
+        logger.info("Monitoring system started after Ray initialization")
         
         # Initialize pipeline orchestrator
         pipeline_config = {
@@ -106,7 +107,8 @@ async def run_pipeline(config_path: str,
         # Setup pipeline stages
         cpu_stage_config = {
             'data': config.data.__dict__,
-            'audio': config.audio.__dict__
+            'audio': config.audio.__dict__,
+            'storage': config.data.storage
         }
         
         gpu_stage_config = {
@@ -254,19 +256,16 @@ async def cleanup():
     global pipeline_orchestrator, monitoring_system
     
     logger.info("Cleaning up resources...")
+
+    if pipeline_orchestrator:
+        pipeline_orchestrator.cleanup()
     
-    try:
-        if pipeline_orchestrator:
-            pipeline_orchestrator.cleanup()
-        
-        if monitoring_system:
-            monitoring_system.stop()
-        
-        if ray.is_initialized():
-            ray.shutdown()
+    if monitoring_system:
+        monitoring_system.stop()
+    
+    if ray.is_initialized():
+        ray.shutdown()
             
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
 
 
 # CLI commands
@@ -303,13 +302,7 @@ def run(
     Path("checkpoints").mkdir(exist_ok=True)
     
     # Run pipeline
-    try:
-        asyncio.run(run_pipeline(config, max_batches, log_level))
-    except KeyboardInterrupt:
-        logger.info("Pipeline interrupted by user")
-    except Exception as e:
-        logger.error(f"Pipeline failed: {e}")
-        sys.exit(1)
+    asyncio.run(run_pipeline(config, max_batches, log_level))
 
 
 @app.command()
@@ -322,18 +315,13 @@ def create_config(
 ):
     """Create a sample configuration file"""
     
-    try:
-        config_content = create_sample_config()
-        
-        with open(output, 'w') as f:
-            f.write(config_content)
-        
-        typer.echo(f"Sample configuration created: {output}")
-        typer.echo("Please edit the configuration file with your settings before running the pipeline.")
-        
-    except Exception as e:
-        typer.echo(f"Error creating configuration: {e}")
-        raise typer.Exit(1)
+    config_content = create_sample_config()
+    
+    with open(output, 'w') as f:
+        f.write(config_content)
+    
+    typer.echo(f"Sample configuration created: {output}")
+    typer.echo("Please edit the configuration file with your settings before running the pipeline.")
 
 
 

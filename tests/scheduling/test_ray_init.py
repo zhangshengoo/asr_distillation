@@ -626,7 +626,7 @@ class TestMonitoringSystemInteraction:
                 enable_prometheus=False,
                 prometheus_port=8001,
                 metrics_interval=0.5,  # 较短的间隔
-                enable_gpu_monitoring=False,
+                enable_gpu_monitoring=True,
                 enable_ray_monitoring=True,
                 checkpoint_interval=10,
                 checkpoint_dir="./tests/test_data/checkpoints"

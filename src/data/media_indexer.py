@@ -20,21 +20,9 @@ class MediaMetadata:
     file_id: str
     oss_path: str
     media_type: str  # 'audio' or 'video'
-    duration: float
     size_bytes: int
-    format: str
+    # 可选字段
     checksum: Optional[str] = None
-    
-    # Audio-specific fields
-    sample_rate: Optional[int] = None
-    channels: Optional[int] = None
-    bitrate: Optional[int] = None
-    audio_codec: Optional[str] = None
-    
-    # Video-specific fields
-    video_codec: Optional[str] = None
-    resolution: Optional[Tuple[int, int]] = None
-    frame_rate: Optional[float] = None
 
 
 class MediaIndexer(ABC):
@@ -68,20 +56,13 @@ class ParquetIndexer(MediaIndexer):
         metadata_list = []
         
         for file_info in media_files:
+            # 只保留可以从文件系统直接获取的信息
             metadata = MediaMetadata(
                 file_id=file_info['file_id'],
                 oss_path=file_info['oss_path'], 
                 media_type=file_info.get('media_type', 'audio'),
-                duration=file_info['duration'],
                 size_bytes=file_info.get('size_bytes', 0),
-                format=file_info.get('format', 'wav'),
-                sample_rate=file_info.get('sample_rate'),
-                channels=file_info.get('channels'),
-                bitrate=file_info.get('bitrate'),
-                audio_codec=file_info.get('audio_codec'),
-                video_codec=file_info.get('video_codec'),
-                resolution=file_info.get('resolution'),
-                frame_rate=file_info.get('frame_rate')
+                checksum=file_info.get('checksum')
             )
             metadata_list.append(metadata.__dict__)
             
@@ -119,31 +100,19 @@ class WebDatasetBuilder:
         
         with wds.ShardWriter(str(output_path / pattern), maxcount=1000) as shard_writer:
             for _, row in media_df.iterrows():
-                # Create sample dictionary
+                # Create sample dictionary with only the fields that exist in the simplified MediaMetadata
                 sample = {
                     "__key__": row['file_id'],
                     "oss_path": row['oss_path'],
                     "media_type": row['media_type'],
-                    "duration": row['duration'],
-                    "format": row['format']
+                    "size_bytes": row['size_bytes']
                 }
                 
-                # Add audio-specific fields if available
-                if pd.notna(row.get('sample_rate')):
-                    sample['sample_rate'] = row['sample_rate']
-                if pd.notna(row.get('channels')):
-                    sample['channels'] = row['channels']
-                if pd.notna(row.get('audio_codec')):
-                    sample['audio_codec'] = row['audio_codec']
+                # Add optional fields if available
+                if 'checksum' in row and pd.notna(row['checksum']):
+                    sample['checksum'] = row['checksum']
                 
-                # Add video-specific fields if available
-                if pd.notna(row.get('video_codec')):
-                    sample['video_codec'] = row['video_codec']
-                if pd.notna(row.get('resolution')):
-                    sample['resolution'] = row['resolution']
-                if pd.notna(row.get('frame_rate')):
-                    sample['frame_rate'] = row['frame_rate']
-                
+                # Additional fields will be added during processing stages
                 shard_writer.write(sample)
                 
         logger.info(f"Created WebDataset shards in {output_path}")

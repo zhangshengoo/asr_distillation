@@ -258,17 +258,17 @@ class MediaDataLoader:
         """获取缓存的音频文件（向后兼容）"""
         return self.cache.get(file_id)
     
-    def get_cached_media(self, file_id: str) -> Optional[Path]:
+    def get_cached_media(self, file_id: str, media_type: str = 'audio') -> Optional[Path]:
         """获取缓存的多媒体文件"""
-        return self.cache.get(file_id)
+        return self.cache.get(file_id, media_type)
     
     def cache_audio(self, file_id: str, audio_data: bytes) -> Path:
         """缓存音频数据（向后兼容）"""
         return self.cache.put(file_id, audio_data)
     
-    def cache_media(self, file_id: str, media_data: bytes) -> Path:
+    def cache_media(self, file_id: str, media_data: bytes, media_type: str = 'audio') -> Path:
         """缓存多媒体数据"""
-        return self.cache.put(file_id, media_data)
+        return self.cache.put(file_id, media_data, media_type)
     
     def clear_cache(self) -> None:
         """清空缓存"""

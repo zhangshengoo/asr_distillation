@@ -41,10 +41,10 @@ class PipelineConfig:
     num_gpu_workers: int = 1
     
     # CPU工作节点资源配置，每个节点的CPU核心数
-    cpu_worker_resources: Dict[str, float] = field(default_factory=lambda: {"CPU": 1})
+    cpu_worker_resources: Dict[str, float] = field(default_factory=lambda: {"num_cpus": 1})
     
     # GPU工作节点资源配置，包含CPU和GPU资源
-    gpu_worker_resources: Dict[str, float] = field(default_factory=lambda: {"CPU": 1, "GPU": 1})
+    gpu_worker_resources: Dict[str, float] = field(default_factory=lambda: {"num_cpus": 1, "num_gpus": 1})
     
     # 批处理大小，影响内存使用和处理效率
     batch_size: int = 32
@@ -520,11 +520,11 @@ pipeline:
   checkpoint_interval: 1000
   
   cpu_worker_resources:
-    CPU: 1
+    num_cpus: 1
     
   gpu_worker_resources:
-    CPU: 1
-    GPU: 1
+    num_cpus: 1
+    num_gpus: 1
 
 audio:
   target_sample_rate: 16000

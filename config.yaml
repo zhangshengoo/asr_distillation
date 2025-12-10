@@ -24,11 +24,11 @@ pipeline:
   checkpoint_interval: 1000
   
   cpu_worker_resources:
-    CPU: 1
+    num_cpus: 1
     
   gpu_worker_resources:
-    CPU: 1
-    GPU: 1
+    num_cpus: 1
+    num_gpus: 1
 
 # 多媒体处理配置
 media:

@@ -65,7 +65,7 @@ class DataProducer:
         if df.empty:
             # Build index from storage if not exists
             audio_files = self.storage_manager.list_audio_files()
-            df = self.data_loader.build_index(audio_files)
+            df = self.data_loader.create_index(audio_files)
         return df.to_dict('records')
     
     def produce_batches(self, 
@@ -159,7 +159,7 @@ class DistributedPipeline:
         if num_workers is None:
             num_workers = self.config.num_cpu_workers
             
-        resources = self.config.cpu_worker_resources or {"CPU": 1}
+        resources = self.config.cpu_worker_resources or {"num_cpus": 1}
         workers = []
         
         for i in range(num_workers):
@@ -183,7 +183,7 @@ class DistributedPipeline:
         if num_workers is None:
             num_workers = self.config.num_gpu_workers
             
-        resources = self.config.gpu_worker_resources or {"CPU": 1, "GPU": 1}
+        resources = self.config.gpu_worker_resources or {"num_cpus": 1, "num_gpus": 1}
         workers = []
         
         for i in range(num_workers):

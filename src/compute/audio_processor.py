@@ -27,6 +27,9 @@ from .media import (
 )
 
 
+from dataclasses import dataclass, field
+from typing import Dict, Any
+
 @dataclass
 class AudioConfig:
     """Audio processing configuration"""
@@ -35,6 +38,13 @@ class AudioConfig:
     normalize: bool = True
     remove_silence: bool = False
     audio_format: str = 'wav'
+    features: Dict[str, Any] = field(default_factory=lambda: {
+        'feature_type': 'mel_spectrogram',
+        'sample_rate': 16000,
+        'n_fft': 400,
+        'hop_length': 160,
+        'n_mels': 80
+    })
 
 
 class AudioPreprocessor:
@@ -45,23 +55,18 @@ class AudioPreprocessor:
         
     def load_audio_from_bytes(self, audio_bytes: bytes) -> torch.Tensor:
         """Load audio tensor from bytes"""
-        try:
-            # Create temporary file to load with torchaudio
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
-                tmp_file.write(audio_bytes)
-                tmp_file.flush()
-                
-                # Load audio
-                waveform, sample_rate = torchaudio.load(tmp_file.name)
-                
-                # Cleanup temp file
-                os.unlink(tmp_file.name)
-                
-                return waveform, sample_rate
-                
-        except Exception as e:
-            logger.error(f"Error loading audio from bytes: {e}")
-            raise
+        # Create temporary file to load with torchaudio
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+            tmp_file.write(audio_bytes)
+            tmp_file.flush()
+            
+            # Load audio
+            waveform, sample_rate = torchaudio.load(tmp_file.name)
+            
+            # Cleanup temp file
+            os.unlink(tmp_file.name)
+            
+            return waveform, sample_rate
     
     def resample(self, waveform: torch.Tensor, original_sr: int) -> torch.Tensor:
         """Resample audio to target sample rate"""
@@ -127,32 +132,26 @@ class AudioPreprocessor:
     
     def process_audio(self, audio_bytes: bytes) -> Tuple[torch.Tensor, int]:
         """Process audio bytes and return tensor"""
-        try:
-            # Load audio
-            waveform, sample_rate = self.load_audio_from_bytes(audio_bytes)
-            
-            # Convert to mono if stereo
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-            # Resample
-            waveform = self.resample(waveform, sample_rate)
-            sample_rate = self.config.target_sample_rate
-            
-            # Trim silence (optional)
-            waveform = self.trim_silence(waveform, sample_rate)
-            
-            # Normalize
-            waveform = self.normalize_audio(waveform)
-            
-            # Return original length audio - no truncation or padding
-            # vLLM handles variable sequence lengths efficiently
-            return waveform.squeeze(0), sample_rate  # Remove channel dimension
-            
-        except Exception as e:
-            logger.error(f"Error processing audio: {e}")
-            raise
-
+        # Load audio
+        waveform, sample_rate = self.load_audio_from_bytes(audio_bytes)
+        
+        # Convert to mono if stereo
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        
+        # Resample
+        waveform = self.resample(waveform, sample_rate)
+        sample_rate = self.config.target_sample_rate
+        
+        # Trim silence (optional)
+        waveform = self.trim_silence(waveform, sample_rate)
+        
+        # Normalize
+        waveform = self.normalize_audio(waveform)
+        
+        # Return original length audio - no truncation or padding
+        # vLLM handles variable sequence lengths efficiently
+        return waveform.squeeze(0), sample_rate  # Remove channel dimension
 
 class AudioDownloadStage(PipelineStage):
     """Stage for downloading audio and multimedia files from storage"""
@@ -163,7 +162,7 @@ class AudioDownloadStage(PipelineStage):
         from ..data.media_indexer import MediaDataLoader
         
         self.storage_manager = MediaStorageManager(config['storage'])
-        self.data_loader = MediaDataLoader(config)
+        self.data_loader = MediaDataLoader(config['data'])
         
         # Initialize multimedia processing if enabled
         self.enable_multimedia = config.get('enable_multimedia', False)
@@ -203,7 +202,7 @@ class AudioDownloadStage(PipelineStage):
                 tmp_file_path = None  # 追踪临时文件路径
                 
                 # Check cache first
-                cached_audio = self.data_loader.get_cached_audio(file_id)
+                cached_audio = self.data_loader.get_cached_media(file_id, 'audio')
                 if cached_audio and cached_audio.exists():
                     try:
                         with open(cached_audio, 'rb') as f:
@@ -225,7 +224,7 @@ class AudioDownloadStage(PipelineStage):
                             audio_bytes = f.read()
                         
                         # Cache the downloaded audio
-                        self.data_loader.cache_audio(file_id, audio_bytes)
+                        self.data_loader.cache_media(file_id, audio_bytes, 'audio')
                         
                     finally:
                         # 清理临时文件
@@ -274,7 +273,7 @@ class AudioDownloadStage(PipelineStage):
                 tmp_file_path = None
                 
                 # Check cache first
-                cached_media = self.data_loader.get_cached_audio(file_id)
+                cached_media = self.data_loader.get_cached_media(file_id, 'audio')
                 if cached_media and cached_media.exists():
                     try:
                         with open(cached_media, 'rb') as f:
@@ -296,7 +295,7 @@ class AudioDownloadStage(PipelineStage):
                             file_bytes = f.read()
                         
                         # Cache the downloaded media
-                        self.data_loader.cache_audio(file_id, file_bytes)
+                        self.data_loader.cache_media(file_id, file_bytes, 'audio')
                         
                     finally:
                         # 清理临时文件
@@ -327,28 +326,19 @@ class AudioDownloadStage(PipelineStage):
         
         # Process media items in batch
         if media_items:
-            try:
-                audio_data_list = self.batch_processor.process_batch(media_items)
-                
-                # Update original items with processed audio data
-                for audio_data in audio_data_list:
-                    item_id = audio_data.item_id
-                    if item_id in item_mapping:
-                        original_item = item_mapping[item_id]
-                        original_item['audio_bytes'] = audio_data.audio_bytes
-                        original_item['audio_metadata'] = audio_data.metadata
-                        original_item['sample_rate'] = audio_data.sample_rate
-                        original_item['channels'] = audio_data.channels
-                        processed_items.append(original_item)
-                        
-            except Exception as e:
-                logger.error(f"Error processing batch media: {e}")
-                # Mark all items as failed
-                for item in batch.items:
-                    if 'error' not in item:
-                        item['error'] = str(e)
-                        processed_items.append(item)
-        
+            audio_data_list = self.batch_processor.process_batch(media_items)
+            
+            # Update original items with processed audio data
+            for audio_data in audio_data_list:
+                item_id = audio_data.item_id
+                if item_id in item_mapping:
+                    original_item = item_mapping[item_id]
+                    original_item['audio_bytes'] = audio_data.audio_bytes
+                    original_item['audio_metadata'] = audio_data.metadata
+                    original_item['sample_rate'] = audio_data.sample_rate
+                    original_item['channels'] = audio_data.channels
+                    processed_items.append(original_item)
+    
         # Create new batch with processed multimedia
         new_batch = DataBatch(
             batch_id=batch.batch_id,
@@ -372,34 +362,24 @@ class AudioPreprocessingStage(PipelineStage):
         processed_items = []
         
         for item in batch.items:
-            try:
-                if 'error' in item:
-                    processed_items.append(item)
-                    continue
-                    
-                audio_bytes = item['audio_bytes']
-                
-                # Process audio
-                waveform, sample_rate = self.preprocessor.process_audio(audio_bytes)
-                
-                # Convert to tensor for GPU processing
-                audio_tensor = {
-                    'waveform': waveform,
-                    'sample_rate': sample_rate,
-                    'duration': waveform.shape[-1] / sample_rate,
-                    'format': 'tensor'
-                }
-                
-                # Update item with processed audio
-                item['audio_tensor'] = audio_tensor
-                item.pop('audio_bytes', None)  # Remove raw bytes to save memory
-                
-                processed_items.append(item)
-                
-            except Exception as e:
-                logger.error(f"Error preprocessing audio for {item['file_id']}: {e}")
-                item['error'] = str(e)
-                processed_items.append(item)
+            audio_bytes = item['audio_bytes']
+            
+            # Process audio
+            waveform, sample_rate = self.preprocessor.process_audio(audio_bytes)
+            
+            # Convert to tensor for GPU processing
+            audio_tensor = {
+                'waveform': waveform,
+                'sample_rate': sample_rate,
+                'duration': waveform.shape[-1] / sample_rate,
+                'format': 'tensor'
+            }
+            
+            # Update item with processed audio
+            item['audio_tensor'] = audio_tensor
+            item.pop('audio_bytes', None)  # Remove raw bytes to save memory
+            
+            processed_items.append(item)
         
         # Create new batch with preprocessed audio
         new_batch = DataBatch(
@@ -415,25 +395,31 @@ class AudioFeatureExtractor:
     """Extract audio features for model input"""
     
     def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.feature_type = config.get('feature_type', 'mel_spectrogram')
+        # 从配置中获取features部分
+        features_config = config.get('features', config)  # 如果没有单独的features配置，则使用整个config
+        self.config = features_config
+        self.feature_type = features_config.get('feature_type', 'mel_spectrogram')
+        self.sample_rate = features_config.get('sample_rate', 16000)
+        self.n_fft = features_config.get('n_fft', 400)
+        self.hop_length = features_config.get('hop_length', 160)
+        self.n_mels = features_config.get('n_mels', 80)
         
         # Initialize feature extractors
         if self.feature_type == 'mel_spectrogram':
             self.mel_transform = torchaudio.transforms.MelSpectrogram(
-                sample_rate=config.get('sample_rate', 16000),
-                n_fft=config.get('n_fft', 400),
-                hop_length=config.get('hop_length', 160),
-                n_mels=config.get('n_mels', 80)
+                sample_rate=self.sample_rate,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                n_mels=self.n_mels
             )
         elif self.feature_type == 'mfcc':
             self.mfcc_transform = torchaudio.transforms.MFCC(
-                sample_rate=config.get('sample_rate', 16000),
-                n_mfcc=config.get('n_mfcc', 40),
+                sample_rate=self.sample_rate,
+                n_mfcc=self.n_mels,
                 melkwargs={
-                    'n_fft': config.get('n_fft', 400),
-                    'hop_length': config.get('hop_length', 160),
-                    'n_mels': config.get('n_mels', 80)
+                    'n_fft': self.n_fft,
+                    'hop_length': self.hop_length,
+                    'n_mels': self.n_mels
                 }
             )
     
@@ -464,26 +450,16 @@ class AudioFeatureStage(PipelineStage):
         processed_items = []
         
         for item in batch.items:
-            try:
-                if 'error' in item:
-                    processed_items.append(item)
-                    continue
-                    
-                waveform = item['audio_tensor']['waveform']
-                sample_rate = item['audio_tensor']['sample_rate']
-                
-                # For Qwen3-Omni, keep the raw audio waveform
-                # The model processor will handle the conversion
-                item['audio_features'] = waveform
-                item['sample_rate'] = sample_rate
-                item['feature_type'] = 'raw_waveform'
-                
-                processed_items.append(item)
-                
-            except Exception as e:
-                logger.error(f"Error preparing audio for {item['file_id']}: {e}")
-                item['error'] = str(e)
-                processed_items.append(item)
+            waveform = item['audio_tensor']['waveform']
+            sample_rate = item['audio_tensor']['sample_rate']
+            
+            # For Qwen3-Omni, keep the raw audio waveform
+            # The model processor will handle the conversion
+            item['audio_features'] = waveform
+            item['sample_rate'] = sample_rate
+            item['feature_type'] = 'raw_waveform'
+            
+            processed_items.append(item)
         
         # Create new batch with prepared audio data
         new_batch = DataBatch(

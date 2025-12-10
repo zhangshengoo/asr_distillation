@@ -55,24 +55,20 @@ class ASRResult:
 
 
 class VADModelManager:
-    """VAD模型管理器 - 单例模式"""
+    """VAD模型管理器 - 每个Worker独立加载模型"""
     
-    _instance = None
-    _model = None
-    _config = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+    def __init__(self):
+        self._model = None
+        self._config = None
     
     def load_model(self, config: Dict[str, Any]) -> None:
         """加载VAD模型"""
         if self._model is None or self._config != config:
             try:
-                self._model = load_silero_vad(onnx=True)
+                # 不使用ONNX，使用PyTorch模型
+                self._model = load_silero_vad(onnx=False)
                 self._config = config
-                logger.info("VAD模型加载成功")
+                logger.info("VAD模型加载成功（PyTorch版本）")
             except Exception as e:
                 logger.error(f"VAD模型加载失败: {e}")
                 raise

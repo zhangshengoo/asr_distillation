@@ -102,65 +102,54 @@ class AudioModelProcessor:
                       sample_rate: int,
                       prompt: str = "请将这段语音转换为纯文本。") -> Dict[str, Any]:
         """Prepare inputs for Qwen3-Omni model"""
-        try:
-            # Convert audio tensor to the format expected by Qwen3-Omni
-            audio_data = {
-                'array': audio_features.numpy(),
-                'sampling_rate': sample_rate
+        # Convert audio tensor to the format expected by Qwen3-Omni
+        audio_data = {
+            'array': audio_features.numpy(),
+            'sampling_rate': sample_rate
+        }
+        
+        # Create messages in Qwen3-Omni format
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "audio", "audio": audio_data},
+                    {"type": "text", "text": prompt},
+                ]
             }
-            
-            # Create messages in Qwen3-Omni format
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "audio", "audio": audio_data},
-                        {"type": "text", "text": prompt},
-                    ]
-                }
-            ]
-            
-            # Apply chat template
-            text = self.processor.apply_chat_template(
-                messages, 
-                tokenize=False, 
-                add_generation_prompt=True
-            )
-            
-            # Process multimodal information
-            audios, images, videos = process_mm_info(messages, use_audio_in_video=False)
-            
-            # Prepare inputs for vLLM
-            inputs = {
-                'prompt': text, 
-                'multi_modal_data': {}, 
-                "mm_processor_kwargs": {"use_audio_in_video": False}
-            }
-            
-            if images is not None:
-                inputs['multi_modal_data']['image'] = images
-            if videos is not None:
-                inputs['multi_modal_data']['video'] = videos
-            if audios is not None:
-                inputs['multi_modal_data']['audio'] = audios
-            
-            return inputs
-            
-        except Exception as e:
-            logger.error(f"Error preparing Qwen3-Omni inputs: {e}")
-            raise
+        ]
+        
+        # Apply chat template
+        text = self.processor.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+        
+        # Process multimodal information
+        audios, images, videos = process_mm_info(messages, use_audio_in_video=False)
+        
+        # Prepare inputs for vLLM
+        inputs = {
+            'prompt': text, 
+            'multi_modal_data': {}, 
+            "mm_processor_kwargs": {"use_audio_in_video": False}
+        }
+        
+        if images is not None:
+            inputs['multi_modal_data']['image'] = images
+        if videos is not None:
+            inputs['multi_modal_data']['video'] = videos
+        if audios is not None:
+            inputs['multi_modal_data']['audio'] = audios
+        
+        return inputs
     
     def decode_output(self, output_text: str) -> str:
         """Decode model output to text (Qwen3-Omni returns text directly)"""
-        try:
-            # Qwen3-Omni returns text directly, no need to decode tokens
-            cleaned_text = output_text.strip()
-            
-            return cleaned_text
-            
-        except Exception as e:
-            logger.error(f"Error decoding Qwen3-Omni output: {e}")
-            return ""
+        # Qwen3-Omni returns text directly, no need to decode tokens
+        cleaned_text = output_text.strip()
+        return cleaned_text
 
 
 class VLLMInferenceEngine:
@@ -174,23 +163,18 @@ class VLLMInferenceEngine:
         
     def _setup_engine(self) -> None:
         """Setup vLLM async engine"""
-        try:
-            engine_args = AsyncEngineArgs(
-                model=self.config.model_name,
-                tensor_parallel_size=self.config.tensor_parallel_size,
-                max_num_batched_tokens=self.config.max_num_batched_tokens,
-                max_model_len=self.config.max_model_len,
-                gpu_memory_utilization=self.config.gpu_memory_utilization,
-                trust_remote_code=self.config.trust_remote_code,
-                dtype=self.config.dtype
-            )
-            
-            self.engine = AsyncLLMEngine.from_engine_args(engine_args)
-            logger.info("vLLM engine setup complete")
-            
-        except Exception as e:
-            logger.error(f"Error setting up vLLM engine: {e}")
-            raise
+        engine_args = AsyncEngineArgs(
+            model=self.config.model_name,
+            tensor_parallel_size=self.config.tensor_parallel_size,
+            max_num_batched_tokens=self.config.max_num_batched_tokens,
+            max_model_len=self.config.max_model_len,
+            gpu_memory_utilization=self.config.gpu_memory_utilization,
+            trust_remote_code=self.config.trust_remote_code,
+            dtype=self.config.dtype
+        )
+        
+        self.engine = AsyncLLMEngine.from_engine_args(engine_args)
+        logger.info("vLLM engine setup complete")
     
     async def generate_async(self, 
                            inputs: Dict[str, Any],
@@ -204,24 +188,18 @@ class VLLMInferenceEngine:
                 repetition_penalty=self.config.repetition_penalty
             )
         
-        try:
-            # Generate using vLLM
-            request_id = f"req_{int(time.time() * 1000000)}"
-            
-            # For simplicity, we'll use a text-based approach
-            # In practice, you'd need to handle the multimodal inputs properly
-            text_input = inputs.get('text', 'Transcribe the audio:')
-            
-            results = []
-            async for request_output in self.engine.generate(text_input, sampling_params, request_id):
-                results.append(request_output.outputs[0].text)
-            
-            return results[-1] if results else ""
-            
-        except Exception as e:
-            logger.error(f"Error in async generation: {e}")
-            return ""
-
+        # Generate using vLLM
+        request_id = f"req_{int(time.time() * 1000000)}"
+        
+        # For simplicity, we'll use a text-based approach
+        # In practice, you'd need to handle the multimodal inputs properly
+        text_input = inputs.get('text', 'Transcribe the audio:')
+        
+        results = []
+        async for request_output in self.engine.generate(text_input, sampling_params, request_id):
+            results.append(request_output.outputs[0].text)
+        
+        return results[-1] if results else ""
 
 class AudioInferenceStage(PipelineStage):
     """Stage for audio inference using vLLM"""
