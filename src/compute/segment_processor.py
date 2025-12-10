@@ -11,7 +11,6 @@ from src.compute.audio_processor import PipelineStage
 from src.scheduling.pipeline import DataBatch
 
 
-@ray.remote
 class SegmentExpansionStage(PipelineStage):
     """音频片段展开阶段 - 将VAD结果展开为segment级别的items
     
@@ -181,7 +180,6 @@ class SegmentExpansionStage(PipelineStage):
         return stats
 
 
-@ray.remote
 class SegmentAggregationStage(PipelineStage):
     """音频片段聚合阶段 - 将segment级别的结果聚合到文件级别
     
@@ -362,12 +360,12 @@ class SegmentAggregationStage(PipelineStage):
 # 工厂函数
 def create_segment_expansion_stage(config: Dict[str, Any]) -> SegmentExpansionStage:
     """创建SegmentExpansionStage"""
-    return SegmentExpansionStage.remote(config)
+    return SegmentExpansionStage(config)
 
 
 def create_segment_aggregation_stage(config: Dict[str, Any]) -> SegmentAggregationStage:
     """创建SegmentAggregationStage"""
-    return SegmentAggregationStage.remote(config)
+    return SegmentAggregationStage(config)
 
 
 # 配置模板

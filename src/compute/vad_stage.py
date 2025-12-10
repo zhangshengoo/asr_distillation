@@ -12,7 +12,6 @@ from src.compute.vad import VADProcessor, AudioSegment, VADResult
 from src.compute.audio_processor import PipelineStage
 
 
-@ray.remote
 class VADProcessingStage(PipelineStage):
     """VAD处理阶段 - Ray Actor"""
     
@@ -213,7 +212,7 @@ class VADStageAdapter:
 # 工厂函数
 def create_vad_stage(config: Dict[str, Any]) -> VADProcessingStage:
     """创建VAD处理阶段"""
-    return VADProcessingStage.remote(config)
+    return VADProcessingStage(config)
 
 
 def create_vad_adapter(config: Dict[str, Any]) -> VADStageAdapter:
