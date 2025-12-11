@@ -706,6 +706,67 @@ class StreamingPipelineOrchestrator:
                 break
         
         logger.info(f"[PIPELINE] ✅ Collected {len(results_list)} result batches")
+
+    def _monitor_progress(self, progress_callback: Optional[Callable]) -> None:
+        """监控Pipeline进度"""
+        last_update = time.time()
+        update_interval = 5.0  # 每5秒更新一次
+        
+        while True:
+            try:
+                current_time = time.time()
+                if current_time - last_update < update_interval:
+                    time.sleep(1)
+                    continue
+                
+                # 收集队列状态
+                queue_stats = {}
+                queue_summary = []
+                for stage_name, queue in self.stage_queues.items():
+                    size = queue.qsize()
+                    maxsize = queue.maxsize
+                    usage_pct = (size / maxsize * 100) if maxsize > 0 else 0
+                    queue_stats[stage_name] = {
+                        'size': size,
+                        'maxsize': maxsize,
+                        'usage_pct': usage_pct
+                    }
+                    # 创建状态指示符
+                    if usage_pct > 80:
+                        indicator = '🔴'  # 队列接近满
+                    elif usage_pct > 50:
+                        indicator = '🟡'  # 中等负载
+                    elif usage_pct > 10:
+                        indicator = '🟢'  # 正常
+                    else:
+                        indicator = '⚪'  # 空闲
+                    queue_summary.append(f"{stage_name}:{size}/{maxsize}({usage_pct:.0f}%){indicator}")
+                
+                # 输出队列状态汇总
+                elapsed = current_time - self.start_time if self.start_time else 0
+                logger.info(f"[PIPELINE] ⏱️ Elapsed: {elapsed:.1f}s | Queue Status: {' | '.join(queue_summary)}")
+                
+                # 检查潜在瓶颈
+                for stage_name, stats in queue_stats.items():
+                    if stats['usage_pct'] > 90:
+                        logger.warning(f"[PIPELINE] ⚠️ BACKPRESSURE: Queue '{stage_name}' is {stats['usage_pct']:.0f}% full!")
+                
+                # 调用进度回调
+                if progress_callback:
+                    progress_callback(0, queue_stats)
+                
+                # 集成监控系统
+                if self.monitoring_system:
+                    for stage_name, stats in queue_stats.items():
+                        self.monitoring_system.metrics_collector.update_queue_size(
+                            stage_name, stats['size']
+                        )
+                
+                last_update = current_time
+                
+            except Exception as e:
+                logger.error(f"Error in progress monitoring: {e}")
+                break
     
     def _compute_stats(self,
                       worker_stats: Dict[str, List[Dict]],
