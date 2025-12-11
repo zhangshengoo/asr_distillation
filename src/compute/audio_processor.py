@@ -341,8 +341,7 @@ class AudioPreprocessingStage(PipelineStage):
         audio_config = AudioConfig(**config.get('audio', {}))
         self.preprocessor = AudioPreprocessor(audio_config)
         
-    def process(self, batch: DataBatch) -> DataBatch:
-        """Preprocess audio and convert to tensors"""
+    """Preprocess audio and convert to tensors"""
         processed_items = []
         
         for item in batch.items:
@@ -351,28 +350,25 @@ class AudioPreprocessingStage(PipelineStage):
             # Process audio
             waveform, sample_rate = self.preprocessor.process_audio(audio_bytes)
             
-            # Convert to tensor for GPU processing
+            # Convert to numpy array for compatibility with VAD processor
+            audio_data = waveform.numpy() if hasattr(waveform, 'numpy') else waveform
+            
+            # Update item with processed audio data directly accessible
+            item['audio_data'] = audio_data  # For VAD processing
+            item['sample_rate'] = sample_rate  # For VAD processing
+            
+            # Also keep audio_tensor for other uses (backward compatibility)
             audio_tensor = {
                 'waveform': waveform,
                 'sample_rate': sample_rate,
                 'duration': waveform.shape[-1] / sample_rate,
                 'format': 'tensor'
             }
-            
-            # Update item with processed audio
             item['audio_tensor'] = audio_tensor
+            
             item.pop('audio_bytes', None)  # Remove raw bytes to save memory
             
             processed_items.append(item)
-        
-        # Create new batch with preprocessed audio
-        new_batch = DataBatch(
-            batch_id=batch.batch_id,
-            items=processed_items,
-            metadata={**batch.metadata, 'stage': 'audio_preprocessing'}
-        )
-        
-        return new_batch
 
 
 class AudioFeatureExtractor:
