@@ -7,9 +7,16 @@ from typing import Optional
 import typer
 
 from src.config.manager import ConfigManager, create_sample_config
+import threading
+import asyncio
+import time
+from typing import Dict, Any, List
+
 from src.simple_pipeline import SimplePipeline
 from src.simple_producer import SimpleDataProducer
-from src.simple_writer import SimpleResultWriter
+from src.storage.result_writer import AsyncResultWriter, WriteConfig
+from src.data.storage import AudioStorageManager
+from src.common import BatchData, FileResultItem
 
 # 导入所有stage
 from src.compute.audio_processor import (
@@ -26,6 +33,84 @@ from src.compute.inference import (
     BatchInferenceStage,
     PostProcessingStage
 )
+
+class SyncResultWriter:
+    """Synchronous wrapper for AsyncResultWriter"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        
+        # Parse configurations
+        writer_config = WriteConfig(**config.get('writer', {}))
+        
+        # Setup storage manager if configured
+        self.storage_manager = None
+        if 'storage' in config:
+            self.storage_manager = AudioStorageManager(config['storage'])
+            
+        # Initialize async writer
+        self.async_writer = AsyncResultWriter(writer_config, self.storage_manager)
+        
+        # Setup background loop
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.thread.start()
+        
+        # Start writer in background
+        future = asyncio.run_coroutine_threadsafe(self.async_writer.start(), self.loop)
+        future.result()  # Wait for start
+        
+    def _run_loop(self):
+        """Run asyncio loop in background thread"""
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+        
+    def write(self, batch: BatchData) -> None:
+        """Write batch results"""
+        items_to_write = []
+        for item in batch.items:
+            if isinstance(item, FileResultItem):
+                # Convert to dict for writer
+                result_dict = {
+                    'file_id': item.file_id,
+                    'transcription': item.transcription,
+                    'segments': item.segments,
+                    'metadata': item.metadata,
+                    'stats': item.stats
+                }
+                items_to_write.append(result_dict)
+                
+        if items_to_write:
+            asyncio.run_coroutine_threadsafe(
+                self.async_writer.write_batch(items_to_write), 
+                self.loop
+            )
+            
+    def close(self):
+        """Stop writer and clean up"""
+        if self.loop.is_running():
+            # Stop writer
+            future = asyncio.run_coroutine_threadsafe(self.async_writer.stop(), self.loop)
+            try:
+                future.result(timeout=5.0)
+            except Exception as e:
+                print(f"Error stopping writer: {e}")
+            
+            # Stop loop
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=2.0)
+            
+    def get_stats(self) -> Dict[str, Any]:
+        """Get writer stats"""
+        # This is not thread-safe strictly but stats are simple types
+        stats = self.async_writer.get_stats()
+        # Add a few sync stats if needed
+        return {
+            'total_written': stats.get('items_written', 0),
+            'files_created': stats.get('files_written', 0),
+            'output_dir': self.async_writer.config.output_format, # Just for info
+            'errors': stats.get('errors', 0)
+        }
 
 
 def setup_pipeline(config) -> SimplePipeline:
@@ -166,9 +251,10 @@ def run_pipeline(config_path: str,
     # 4. 创建结果写入器
     writer_config = {
         'writer': config.writer.__dict__,
-        'output_dir': './results'
+        'storage': config.data.storage if hasattr(config.data, 'storage') else None,
+        'output_dir': './results'  # Configured in writer config usually, but keeping for compat
     }
-    writer = SimpleResultWriter(writer_config)
+    writer = SyncResultWriter(writer_config)
     
     # 5. 设置Pipeline
     print("设置Pipeline...")
