@@ -261,17 +261,15 @@ class BatchInferenceStage(PipelineStage):
             metadata={**batch.metadata, 'stage': 'batch_inference'}
         )
     
+
     def process(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
         """Sync wrapper for compatibility"""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                raise RuntimeError("Cannot call sync process() in running event loop")
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(self.process_async(batch))
+            return loop.run_until_complete(self.process_async(batch))
+        finally:
+            loop.close()
 
 
 class PostProcessingStage(PipelineStage):
