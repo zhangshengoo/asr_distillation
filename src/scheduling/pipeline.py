@@ -2,7 +2,7 @@
 
 import time
 from typing import Dict, List, Any, Optional, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 
 import ray
@@ -11,23 +11,7 @@ from ray.util.queue import Queue
 
 # 从配置管理器导入PipelineConfig
 from src.config.manager import PipelineConfig
-@dataclass
-class DataBatch:
-    """Data batch for pipeline processing
-    
-    设计原则：
-    1. 每个item包含自己的metadata，表示原始文件的属性
-    2. batch.metadata用于批次级别的状态信息
-    3. 清晰分离批次状态信息和文件元数据信息
-    """
-    batch_id: str
-    items: List[Dict[str, Any]]
-    metadata: Dict[str, Any] = None
-    
-    def __post_init__(self):
-        """初始化默认metadata字典"""
-        if self.metadata is None:
-            self.metadata = {}
+from src.common import DataBatch
 
 
 class PipelineStage(ABC):

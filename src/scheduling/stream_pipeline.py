@@ -24,17 +24,7 @@ from loguru import logger
 
 # 从配置管理器导入PipelineConfig
 from src.config.manager import PipelineConfig
-@dataclass
-class DataBatch:
-    """Data batch for pipeline processing"""
-    batch_id: str
-    items: List[Dict[str, Any]]
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    retry_count: int = 0
-    
-    def __post_init__(self):
-        if not self.metadata:
-            self.metadata = {}
+from src.common import DataBatch
 
 
 class PipelineStage(ABC):
