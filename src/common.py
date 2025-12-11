@@ -36,8 +36,8 @@ class RawAudioItem(SourceItem):
 class TensorItem(SourceItem):
     """State after decoding: Contains waveform tensor."""
     # Using np.ndarray for Ray Zero-Copy efficiency
-    waveform: np.ndarray 
-    sample_rate: int
+    waveform: np.ndarray = field(default_factory=lambda: np.array([]))
+    sample_rate: int = 16000  # Default sample rate
     metadata: Dict[str, Any] = field(default_factory=dict)
     # Note: audio_bytes is DROPPED here to save memory
 
@@ -60,9 +60,9 @@ class SegmentItem(PipelineItem):
 @dataclass
 class InferenceItem(SegmentItem):
     """State after Inference: Contains text."""
-    transcription: str
-    confidence: float
-    inference_timestamp: float
+    transcription: str = ""
+    confidence: float = 0.0
+    inference_timestamp: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
