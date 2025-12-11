@@ -168,7 +168,7 @@ class StreamingDataProducer:
 
 @ray.remote
 class StreamingPipelineWorker:
-    """流式Pipeline Worker - 从输入队列读取，处理后写入输出队列"""
+    """流式Pipeline Worker - 支持同步和异步Stage"""
     
     def __init__(self,
                  worker_id: str,
@@ -180,6 +180,16 @@ class StreamingPipelineWorker:
         self.stage_name = stage_name
         self.stage = stage_class(stage_config)
         self.max_retries = max_retries
+        
+        # 检测是否为异步Stage
+        self.is_async_stage = hasattr(self.stage, 'process_async')
+        
+        # 如果是异步Stage，创建事件循环
+        self.loop = None
+        if self.is_async_stage:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            logger.info(f"Worker {self.worker_id} initialized with async event loop")
         
         # 统计信息
         self.processed_count = 0
@@ -193,68 +203,84 @@ class StreamingPipelineWorker:
         """从输入队列流式处理数据"""
         logger.info(f"Worker {self.worker_id} started processing stream")
         
-        while True:
-            try:
-                # 从输入队列获取批次（带超时）
-                batch = input_queue.get(block=True, timeout=10)
-                
-                # None 表示流结束
-                if batch is None:
-                    logger.info(f"Worker {self.worker_id} received end signal")
-                    # 传递结束信号到下游
-                    output_queue.put(None, block=True)
-                    break
-                
-                # 处理批次
-                start_time = time.time()
+        try:
+            while True:
                 try:
-                    result = self.stage.process(batch)
-                    result.metadata['worker_id'] = self.worker_id
-                    result.metadata['stage'] = self.stage_name
-                    result.metadata['processed_at'] = time.time()
-                    result.metadata['processing_time'] = time.time() - start_time
+                    # 从输入队列获取批次（带超时）
+                    batch = input_queue.get(block=True, timeout=10)
                     
-                    # 放入输出队列
-                    output_queue.put(result, block=True, timeout=60)
+                    # None 表示流结束
+                    if batch is None:
+                        logger.info(f"Worker {self.worker_id} received end signal")
+                        # 传递结束信号到下游
+                        output_queue.put(None, block=True)
+                        break
                     
-                    self.processed_count += 1
-                    self.total_processing_time += time.time() - start_time
-                    
-                except Exception as e:
-                    logger.error(f"Worker {self.worker_id} processing error: {e}")
-                    
-                    # 重试逻辑
-                    batch.retry_count += 1
-                    if batch.retry_count <= self.max_retries:
-                        logger.info(f"Retrying batch {batch.batch_id} (attempt {batch.retry_count})")
-                        input_queue.put(batch, block=True)
-                    else:
-                        logger.error(f"Batch {batch.batch_id} failed after {self.max_retries} retries")
-                        batch.metadata['error'] = str(e)
-                        batch.metadata['failed_worker'] = self.worker_id
-                        dead_letter_queue.put(batch, block=True)
+                    # 处理批次
+                    start_time = time.time()
+                    try:
+                        # 根据Stage类型选择处理方式
+                        if self.is_async_stage:
+                            # 异步Stage：在事件循环中执行
+                            result = self.loop.run_until_complete(
+                                self.stage.process_async(batch)
+                            )
+                        else:
+                            # 同步Stage：直接调用
+                            result = self.stage.process(batch)
                         
-                    self.error_count += 1
-                    
-            except Empty:
-                # 队列为空，继续等待
-                continue
-            except Exception as e:
-                logger.error(f"Worker {self.worker_id} unexpected error: {e}")
-                break
-        
-        # 返回统计信息
-        stats = {
-            'worker_id': self.worker_id,
-            'stage': self.stage_name,
-            'processed_count': self.processed_count,
-            'error_count': self.error_count,
-            'avg_processing_time': (self.total_processing_time / self.processed_count 
-                                   if self.processed_count > 0 else 0)
-        }
-        
-        logger.info(f"Worker {self.worker_id} completed: {stats}")
-        return stats
+                        result.metadata['worker_id'] = self.worker_id
+                        result.metadata['stage'] = self.stage_name
+                        result.metadata['processed_at'] = time.time()
+                        result.metadata['processing_time'] = time.time() - start_time
+                        
+                        # 放入输出队列
+                        output_queue.put(result, block=True, timeout=60)
+                        
+                        self.processed_count += 1
+                        self.total_processing_time += time.time() - start_time
+                        
+                    except Exception as e:
+                        logger.error(f"Worker {self.worker_id} processing error: {e}")
+                        
+                        # 重试逻辑
+                        batch.retry_count += 1
+                        if batch.retry_count <= self.max_retries:
+                            logger.info(f"Retrying batch {batch.batch_id} (attempt {batch.retry_count})")
+                            input_queue.put(batch, block=True)
+                        else:
+                            logger.error(f"Batch {batch.batch_id} failed after {self.max_retries} retries")
+                            batch.metadata['error'] = str(e)
+                            batch.metadata['failed_worker'] = self.worker_id
+                            dead_letter_queue.put(batch, block=True)
+                            
+                        self.error_count += 1
+                        
+                except Empty:
+                    # 队列为空，继续等待
+                    continue
+                except Exception as e:
+                    logger.error(f"Worker {self.worker_id} unexpected error: {e}")
+                    break
+            
+            # 返回统计信息
+            stats = {
+                'worker_id': self.worker_id,
+                'stage': self.stage_name,
+                'processed_count': self.processed_count,
+                'error_count': self.error_count,
+                'avg_processing_time': (self.total_processing_time / self.processed_count 
+                                       if self.processed_count > 0 else 0)
+            }
+            
+            logger.info(f"Worker {self.worker_id} completed: {stats}")
+            return stats
+            
+        finally:
+            # 清理事件循环
+            if self.loop is not None:
+                self.loop.close()
+                logger.info(f"Worker {self.worker_id} event loop closed")
 
 
 class StreamingPipelineOrchestrator:
@@ -333,7 +359,7 @@ class StreamingPipelineOrchestrator:
                              else self.pipeline_config.gpu_worker_resources)
             
             if resource_config is None:
-                resource_config = {"CPU": 1} if stage_type == 'cpu' else {"CPU": 1, "GPU": 1}
+                resource_config = {"num_cpus": 1} if stage_type == 'cpu' else {"num_cpus": 1, "num_gpus": 1}
             
             for worker_idx in range(num_workers):
                 worker = StreamingPipelineWorker.options(**resource_config).remote(
@@ -510,7 +536,7 @@ class StreamingPipelineOrchestrator:
         for stage_name, stats_list in worker_stats.items():
             total_processed = sum(s['processed_count'] for s in stats_list)
             total_errors = sum(s['error_count'] for s in stats_list)
-            avg_time = sum(s['avg_processing_time'] for s in stats_list) / len(stats_list)
+            avg_time = sum(s['avg_processing_time'] for s in stats_list) / len(stats_list) if stats_list else 0
             
             stage_stats[stage_name] = {
                 'processed': total_processed,

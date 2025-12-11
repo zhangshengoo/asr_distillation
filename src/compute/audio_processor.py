@@ -352,7 +352,7 @@ class AudioPreprocessingStage(PipelineStage):
             waveform, sample_rate = self.preprocessor.process_audio(audio_bytes)
             
             # Convert to numpy array for compatibility with VAD processor
-            audio_data = waveform.numpy() if hasattr(waveform, 'numpy') else waveform
+            audio_data = waveform.numpy() if not hasattr(waveform, 'numpy') else waveform
             
             # Update item with processed audio data directly accessible
             item['audio_data'] = audio_data  # For VAD processing
