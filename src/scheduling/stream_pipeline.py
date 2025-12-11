@@ -64,10 +64,10 @@ class TerminationBarrier:
             return
             
         self.signals_received += 1
-        logger.info(f"[BARRIER:{self.stage_name}] Received signal from {source} ({self.signals_received}/{self.upstream_worker_count})")
-        
         if self.signals_received >= self.upstream_worker_count:
             logger.info(f"[BARRIER:{self.stage_name}] ✅ All upstream workers finished. Sending {self.downstream_worker_count} END_OF_STREAM signals downstream.")
+        else:
+            logger.debug(f"[BARRIER:{self.stage_name}] Received signal from {source} ({self.signals_received}/{self.upstream_worker_count})")
             
             # 向下游发送指定数量的结束信号
             for i in range(self.downstream_worker_count):
@@ -211,7 +211,10 @@ class StreamingDataProducer:
                     metadata={'stage': 'producer', 'batch_index': self.total_produced}
                 )
                 
-                logger.info(f"[PRODUCER] 📤 Created batch '{batch.batch_id}' with {len(items)} SourceItems")
+                logger.debug(f"[PRODUCER] 📤 Created batch '{batch.batch_id}' with {len(items)} SourceItems")
+                
+                # Rate limit to prevent object store flooding
+                time.sleep(0.01)
                 
                 # 将batch放入队列（会阻塞直到队列有空间）
                 try:
@@ -351,10 +354,9 @@ class StreamingPipelineWorker:
                     
                     # 处理批次
                     start_time = time.time()
-                    
-                    # 详细日志: 输入batch信息
+                    # 详细日志: 输入batch信息(DEBUG)
                     item_types = self._count_item_types(batch.items)
-                    logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 📥 INPUT batch '{batch.batch_id}' | items={len(batch.items)} | types={item_types}")
+                    logger.debug(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 📥 INPUT batch '{batch.batch_id}' | items={len(batch.items)} | types={item_types}")
                     
                     try:
                         # 根据Stage类型选择处理方式
@@ -370,18 +372,16 @@ class StreamingPipelineWorker:
                         result.metadata['worker_id'] = self.worker_id
                         result.metadata['stage'] = self.stage_name
                         result.metadata['processed_at'] = time.time()
-                        result.metadata['processing_time'] = time.time() - start_time
-                        
-                        # 详细日志: 输出batch信息
+                        # 详细日志: 输出batch信息(DEBUG)
                         output_item_types = self._count_item_types(result.items)
                         processing_time = time.time() - start_time
-                        logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 📤 OUTPUT batch '{batch.batch_id}' | input={len(batch.items)} -> output={len(result.items)} | types={output_item_types} | time={processing_time:.2f}s")
+                        logger.debug(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 📤 OUTPUT batch '{batch.batch_id}' | input={len(batch.items)} -> output={len(result.items)} | types={output_item_types} | time={processing_time:.2f}s")
                         
                         # 如果item数量变化明显，额外输出警告
                         if len(result.items) == 0 and len(batch.items) > 0:
                             logger.warning(f"[STAGE:{self.stage_name}] ⚠️ Batch '{batch.batch_id}' produced ZERO output items from {len(batch.items)} inputs!")
                         elif len(result.items) > len(batch.items) * 10:
-                            logger.info(f"[STAGE:{self.stage_name}] 🔀 Batch '{batch.batch_id}' EXPANDED: {len(batch.items)} -> {len(result.items)} items (expansion stage)")
+                            logger.debug(f"[STAGE:{self.stage_name}] 🔀 Batch '{batch.batch_id}' EXPANDED: {len(batch.items)} -> {len(result.items)} items (expansion stage)")
                         
                         # 放入输出队列
                         # 增加超时时间以应对背压，避免直接报错 (60s -> 300s)
@@ -393,6 +393,11 @@ class StreamingPipelineWorker:
                         
                         self.processed_count += 1
                         self.total_processing_time += time.time() - start_time
+                        
+                        # 定期打印状态 (每100个batch)
+                        if self.processed_count % 100 == 0:
+                            avg_time = self.total_processing_time / self.processed_count
+                            logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 🔄 Processed {self.processed_count} batches | Avg time: {avg_time:.3f}s")
                         
                     except Exception as e:
                         import traceback
@@ -662,7 +667,20 @@ class StreamingPipelineOrchestrator:
             # 计算统计信息
             execution_stats = self._compute_stats(worker_stats, results)
             
-            logger.info(f"Pipeline execution completed: {execution_stats}")
+            logger.info("=" * 60)
+            logger.info("Pipeline Execution Completed")
+            logger.info("=" * 60)
+            logger.info(f"Total Duration:   {execution_stats['total_duration']:.2f}s")
+            logger.info(f"Total Batches:    {execution_stats['total_batches']}")
+            logger.info(f"Total Items:      {execution_stats['total_items']}")
+            logger.info(f"Success Rate:     {execution_stats['success_rate']:.2%}")
+            logger.info(f"Throughput:       {execution_stats['throughput']:.2f} items/s")
+            logger.info(f"Dead Letter:      {execution_stats['dead_letter_count']}")
+            logger.info("-" * 60)
+            logger.info("Stage Statistics:")
+            for stage, s in execution_stats['stage_stats'].items():
+                logger.info(f"  {stage:<20} | Processed: {s['processed']:<8} | Errors: {s['errors']:<6} | Avg Time: {s['avg_processing_time']:.3f}s")
+            logger.info("=" * 60)
             
             return execution_stats
             
