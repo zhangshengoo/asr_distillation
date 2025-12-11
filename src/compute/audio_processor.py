@@ -4,14 +4,15 @@ import os
 import io
 import tempfile
 from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import torch
 import torchaudio
 import numpy as np
 
-from ..scheduling.pipeline import PipelineStage, DataBatch
+from ..scheduling.pipeline import PipelineStage
+from ..common import BatchData, SourceItem, RawAudioItem, TensorItem
 from .media import (
     MediaDetector, 
     MediaType, 
@@ -52,7 +53,7 @@ class AudioPreprocessor:
     def __init__(self, config: AudioConfig):
         self.config = config
         
-    def load_audio_from_bytes(self, audio_bytes: bytes) -> torch.Tensor:
+    def load_audio_from_bytes(self, audio_bytes: bytes) -> Tuple[torch.Tensor, int]:
         """Load audio tensor from bytes"""
         # Create temporary file to load with torchaudio
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
@@ -164,7 +165,7 @@ class AudioDownloadStage(PipelineStage):
         self.data_loader = MediaDataLoader(config['data'])
         
         # Initialize multimedia processing if enabled
-        self.enable_multimedia = config.get('enable_multimedia', False)
+        self.enable_multimedia = config.get('enable_multimedia', True)
         if self.enable_multimedia:
             media_config = MediaConfig(**config.get('media', {}))
             cache_config = CacheConfig(
@@ -178,10 +179,8 @@ class AudioDownloadStage(PipelineStage):
             self.extractor = MediaExtractor(media_config)
             self.batch_processor = BatchMediaProcessor(media_config, cache_config)
         
-    def process(self, batch: DataBatch) -> DataBatch:
+    def process(self, batch: BatchData[SourceItem]) -> BatchData[RawAudioItem]:
         """Download and process audio/multimedia files for batch"""
-        processed_items = []
-        
         if self.enable_multimedia:
             # Use multimedia processing pipeline
             return self._process_multimedia_batch(batch)
@@ -189,7 +188,7 @@ class AudioDownloadStage(PipelineStage):
             # Use original audio-only pipeline
             return self._process_audio_batch(batch)
     
-    def _process_audio_batch(self, batch: DataBatch) -> DataBatch:
+    def _process_audio_batch(self, batch: BatchData) -> BatchData:
         """Process audio-only batch"""
         processed_items = []
         
@@ -240,7 +239,7 @@ class AudioDownloadStage(PipelineStage):
             processed_items.append(item)
         
         # Create new batch with downloaded audio
-        new_batch = DataBatch(
+        new_batch = BatchData(
             batch_id=batch.batch_id,
             items=processed_items,
             metadata={**batch.metadata, 'stage': 'audio_download'}
@@ -248,18 +247,18 @@ class AudioDownloadStage(PipelineStage):
         
         return new_batch
     
-    def _process_multimedia_batch(self, batch: DataBatch) -> DataBatch:
+    def _process_multimedia_batch(self, batch: BatchData[SourceItem]) -> BatchData[RawAudioItem]:
         """Process multimedia batch with format conversion"""
         processed_items = []
         
         # Create media items from batch
         media_items = []
-        item_mapping = {}  # Map item_id to original item
+        item_mapping = {}  # Map item_id to original SourceItem
         
         for item in batch.items:
-            file_id = item['file_id']
-            oss_path = item['oss_path']
-            filename = item.get('filename', os.path.basename(oss_path))
+            file_id = item.file_id
+            oss_path = item.oss_path
+            filename = item.metadata.get('filename', os.path.basename(oss_path))
             file_bytes = None
             tmp_file_path = None
             
@@ -302,7 +301,7 @@ class AudioDownloadStage(PipelineStage):
                     item_id=file_id,
                     file_bytes=file_bytes,
                     filename=filename,
-                    metadata=item.get('metadata', {})
+                    metadata=item.metadata
                 )
                 media_items.append(media_item)
                 item_mapping[file_id] = item
@@ -312,19 +311,29 @@ class AudioDownloadStage(PipelineStage):
         # Process media items in batch
         audio_data_list = self.batch_processor.process_batch(media_items)
         
-        # Update original items with processed audio data
+        # Create RawAudioItem objects with processed audio data
         for audio_data in audio_data_list:
             item_id = audio_data.item_id
             if item_id in item_mapping:
                 original_item = item_mapping[item_id]
-                original_item['audio_bytes'] = audio_data.audio_bytes
-                original_item['audio_metadata'] = audio_data.metadata
-                original_item['sample_rate'] = audio_data.sample_rate
-                original_item['channels'] = audio_data.channels
-                processed_items.append(original_item)
+                # Create RawAudioItem with audio_bytes
+                raw_audio_item = RawAudioItem(
+                    file_id=original_item.file_id,
+                    oss_path=original_item.oss_path,
+                    format=original_item.format,
+                    duration=original_item.duration,
+                    metadata={
+                        **original_item.metadata,
+                        'audio_metadata': audio_data.metadata,
+                        'sample_rate': audio_data.sample_rate,
+                        'channels': audio_data.channels
+                    },
+                    audio_bytes=audio_data.audio_bytes
+                )
+                processed_items.append(raw_audio_item)
     
         # Create new batch with processed multimedia
-        new_batch = DataBatch(
+        new_batch = BatchData(
             batch_id=batch.batch_id,
             items=processed_items,
             metadata={**batch.metadata, 'stage': 'multimedia_download'}
@@ -341,44 +350,33 @@ class AudioPreprocessingStage(PipelineStage):
         audio_config = AudioConfig(**config.get('audio', {}))
         self.preprocessor = AudioPreprocessor(audio_config)
         
-    def process(self, batch: DataBatch) -> DataBatch:
+    def _preprocess_item(self, item: RawAudioItem) -> TensorItem:
+        """Preprocess single item"""
+        try:
+            waveform, sample_rate = self.preprocessor.process_audio(item.audio_bytes)
+            
+            # Create TensorItem
+            # Optimization: Convert to numpy for shared memory efficiency if needed, 
+            # but TensorItem expects numpy as per common.py definition.
+            # self.preprocessor returns Tensor, need conversion
+            waveform_np = waveform.numpy() 
+            
+            return TensorItem(
+                file_id=item.file_id,
+                oss_path=item.oss_path,
+                format=item.format,
+                duration=item.duration,
+                metadata=item.metadata,
+                waveform=waveform_np,
+                sample_rate=sample_rate
+            )
+        except Exception as e:
+            # Add logging here
+            return None
+
+    def process(self, batch: BatchData[RawAudioItem]) -> BatchData[TensorItem]:
         """Preprocess audio and convert to tensors"""
-        processed_items = []
-        
-        for item in batch.items:
-            audio_bytes = item['audio_bytes']
-            
-            # Process audio
-            waveform, sample_rate = self.preprocessor.process_audio(audio_bytes)
-            
-            # Convert to numpy array for compatibility with VAD processor
-            audio_data = waveform.numpy() if not hasattr(waveform, 'numpy') else waveform
-            
-            # Update item with processed audio data directly accessible
-            item['audio_data'] = audio_data  # For VAD processing
-            item['sample_rate'] = sample_rate  # For VAD processing
-            
-            # Also keep audio_tensor for other uses (backward compatibility)
-            audio_tensor = {
-                'waveform': waveform,
-                'sample_rate': sample_rate,
-                'duration': waveform.shape[-1] / sample_rate,
-                'format': 'tensor'
-            }
-            item['audio_tensor'] = audio_tensor
-            
-            item.pop('audio_bytes', None)  # Remove raw bytes to save memory
-            
-            processed_items.append(item)
-        
-        # Create new batch with preprocessed audio
-        new_batch = DataBatch(
-            batch_id=batch.batch_id,
-            items=processed_items,
-            metadata={**batch.metadata, 'stage': 'audio_preprocessing'}
-        )
-        
-        return new_batch
+        return batch.map(self._preprocess_item, new_batch_id=f"{batch.batch_id}_preprocessed")
 
 
 class AudioFeatureExtractor:
@@ -435,27 +433,35 @@ class AudioFeatureStage(PipelineStage):
         super().__init__(config)
         # Qwen3-Omni expects raw audio waveform, no feature extraction needed
         
-    def process(self, batch: DataBatch) -> DataBatch:
+    def _prepare_item(self, item: SegmentItem) -> SegmentItem:
+        """Prepare item (add features if needed, or pass through for Qwen3-Omni)"""
+        # For Qwen3-Omni, we might just pass through or ensure format
+        # If we need to add 'feature' field, we would need a new Item type or modify SegmentItem
+        # But per design doc, AudioFeatureStage output is SegmentItem-like but with features.
+        # Ideally we might have a FeatureItem, but for now let's reuse/enrich.
+        
+        # Actually Note.md says AudioFeatureStage output has 'audio_features' etc.
+        # But common.py SegmentItem definition doesn't have 'audio_features'.
+        # For strict typing, we should either update SegmentItem or use dynamic getattr
+        # or stick to what is in common.py.
+        # Assuming we can dynamically add or we update common.py later.
+        # For now, let's assume valid SegmentItem in -> SegmentItem out (maybe with updated metadata?)
+        # Or returns InferenceReadyItem?
+        
+        # NOTE: Refactoring to use functional map implies returning a new Typed Item.
+        # InferenceItem requires 'transcription', so we can't use that yet.
+        # We will return SegmentItem, but perhaps use metadata to store features if needed, 
+        # OR just update common.py to include audio_features in SegmentItem (optional).
+        
+        # For now, let's keep it simple: Just pass through or do minimal updates.
+        # Qwen3-Omni takes raw waveform which SegmentItem already has in 'waveform' field.
+        # So this stage might be a confusing "pass-through" or "verification" stage.
+        return item
+
+    def process(self, batch: BatchData[SegmentItem]) -> BatchData[SegmentItem]:
         """Prepare audio data for Qwen3-Omni model"""
-        processed_items = []
-        
-        for item in batch.items:
-            waveform = item['audio_tensor']['waveform']
-            sample_rate = item['audio_tensor']['sample_rate']
-            
-            # For Qwen3-Omni, keep the raw audio waveform
-            # The model processor will handle the conversion
-            item['audio_features'] = waveform
-            item['sample_rate'] = sample_rate
-            item['feature_type'] = 'raw_waveform'
-            
-            processed_items.append(item)
-        
-        # Create new batch with prepared audio data
-        new_batch = DataBatch(
-            batch_id=batch.batch_id,
-            items=processed_items,
-            metadata={**batch.metadata, 'stage': 'audio_preparation'}
-        )
+         # This stage effectively might just be a NOP or validation for Qwen3-Omni
+         # if the model takes raw waveforms which are already in SegmentItems.
+        return batch.map(self._prepare_item, new_batch_id=f"{batch.batch_id}_features")
         
         return new_batch

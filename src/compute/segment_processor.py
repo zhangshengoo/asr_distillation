@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 import ray
 
-from src.compute.audio_processor import PipelineStage
-from src.scheduling.pipeline import DataBatch
+from src.scheduling.pipeline import PipelineStage
+from src.common import BatchData, TensorItem, SegmentItem, InferenceItem, FileResultItem
 
 
 class SegmentExpansionStage(PipelineStage):
@@ -33,51 +33,61 @@ class SegmentExpansionStage(PipelineStage):
             'processing_time': 0.0
         }
     
-    def process(self, batch: DataBatch) -> DataBatch:
+    def process(self, batch: BatchData[TensorItem]) -> BatchData[SegmentItem]:
         """处理批次数据，展开为segment级别"""
         start_time = time.time()
-        segment_items = []
         
-        for item in batch.items:
-            file_id = item.get('file_id')
-            
-            # 处理错误情况 - 不处理有错误的项目，直接跳过
-            if 'error' in item:
-                continue  # 不将错误项目加入结果
-                
-            # 检查是否有segments
-            segments = item.get('segments', [])
-            if not segments:
-                continue  # 没有有效segments的项目也不加入结果
-                
-            # 展开segments
-            valid_segments = self._filter_segments(segments)
-            for i, segment in enumerate(valid_segments):
-                segment_item = self._create_segment_item(item, segment, i)
-                segment_items.append(segment_item)
-            
-            # 更新统计信息
-            self.stats['processed_files'] += 1
-            self.stats['total_segments'] += len(segments)
-            self.stats['filtered_segments'] += len(segments) - len(valid_segments)
+        # 使用flat_map展开segments
+        new_batch = batch.flat_map(self._expand_item, new_batch_id=f"{batch.batch_id}_expanded")
         
         # 更新处理时间
         self.stats['processing_time'] += time.time() - start_time
+        self.stats['processed_files'] += len(batch.items)
+        self.stats['total_segments'] += len(new_batch.items)
         
-        # 创建新的批次
-        new_batch = DataBatch(
-            batch_id=f"{batch.batch_id}_expanded",
-            items=segment_items,
-            metadata={
-                **batch.metadata,
-                'stage': 'segment_expansion',
-                'original_batch_size': len(batch.items),
-                'expanded_batch_size': len(segment_items),
-                'expansion_ratio': len(segment_items) / len(batch.items) if batch.items else 0
-            }
-        )
+        # 更新metadata
+        new_batch.metadata.update({
+            'stage': 'segment_expansion',
+            'original_batch_size': len(batch.items),
+            'expanded_batch_size': len(new_batch.items),
+            'expansion_ratio': len(new_batch.items) / len(batch.items) if batch.items else 0
+        })
         
         return new_batch
+    
+    def _expand_item(self, item: TensorItem) -> List[SegmentItem]:
+        """展开单个TensorItem为多个SegmentItem"""
+        # 从metadata获取VAD segment结果
+        segments_data = item.metadata.get('segments', [])
+        if not segments_data:
+            return []
+        
+        # 过滤并创建SegmentItem列表
+        valid_segments = self._filter_segments(segments_data)
+        segment_items = []
+        
+        for idx, segment_data in enumerate(valid_segments):
+            segment_item = SegmentItem(
+                file_id=item.file_id,
+                parent_file_id=item.file_id,
+                segment_id=segment_data.segment_id,
+                segment_index=idx,
+                start_time=segment_data.start_time,
+                end_time=segment_data.end_time,
+                waveform=segment_data.audio_data,
+                original_duration=segment_data.original_duration,
+                oss_path=item.oss_path,
+                metadata={
+                    **item.metadata,
+                    'sample_rate': segment_data.sample_rate,
+                    'duration': segment_data.duration,
+                    'processing_timestamp': time.time()
+                }
+            )
+            segment_items.append(segment_item)
+            
+        self.stats['filtered_segments'] += len(segments_data) - len(valid_segments)
+        return segment_items
     
     def _filter_segments(self, segments: List[Any]) -> List[Any]:
         """过滤无效的segments"""
@@ -105,45 +115,6 @@ class SegmentExpansionStage(PipelineStage):
             valid_segments.sort(key=lambda s: getattr(s, 'start_time', 0))
         
         return valid_segments
-    
-    def _create_segment_item(self, original_item: Dict[str, Any], segment: Any, index: int) -> Dict[str, Any]:
-        """创建segment级别的item"""
-        segment_item = {
-            # 基本信息继承
-            'file_id': original_item['file_id'],
-            'segment_id': segment.segment_id,
-            
-            # Segment特定信息
-            'start_time': segment.start_time,
-            'end_time': segment.end_time,
-            
-            # 为AudioFeatureStage创建audio_tensor格式
-            'audio_tensor': {
-                'waveform': segment.audio_data,
-                'sample_rate': segment.sample_rate,
-                'duration': segment.duration,
-                'format': 'tensor'
-            },
-            
-            # 原始文件信息
-            'original_duration': segment.original_duration,
-            'segment_index': index,
-            
-            # 保留原始item中的所有重要字段，确保后续阶段能访问
-            'oss_path': original_item.get('oss_path', ''),
-            'format': original_item.get('format', 'wav'),
-            'audio_metadata': original_item.get('audio_metadata', {}),
-            
-            # VAD相关信息
-            'speech_ratio': original_item.get('speech_ratio', 0.0),
-            'num_segments': original_item.get('num_segments', 0),
-            
-            # 其他元数据
-            'metadata': original_item.get('metadata', {}),
-            'processing_timestamp': time.time()
-        }
-        
-        return segment_item
     
     def get_stats(self) -> Dict[str, Any]:
         """获取处理统计信息"""
@@ -181,29 +152,27 @@ class SegmentAggregationStage(PipelineStage):
             'processing_time': 0.0
         }
     
-    def process(self, batch: DataBatch) -> DataBatch:
+    def process(self, batch: BatchData[InferenceItem]) -> BatchData[FileResultItem]:
         """处理批次数据，聚合到文件级别"""
         start_time = time.time()
         
-        # 按文件ID分组
-        file_groups = self._group_by_file(batch.items)
+        # 使用group_by按文件ID分组
+        file_groups = batch.group_by(lambda item: item.file_id)
         
         # 聚合每个文件的结果
         aggregated_items = []
         for file_id, segments in file_groups.items():
-            aggregated_item = self._aggregate_file_results(file_id, segments)
-            # 只有在没有错误的情况下才添加到结果中
-            if 'error' not in aggregated_item:
-                aggregated_items.append(aggregated_item)
+            aggregated_item = self._aggregate_segments(file_id, segments)
+            aggregated_items.append(aggregated_item)
         
         # 更新统计信息
         self.stats['processed_batches'] += 1
-        self.stats['aggregated_files'] += len(aggregated_items)  # 只统计成功聚合的文件
-        self.stats['total_segments'] += sum(len(segments) for segments in file_groups.values())
+        self.stats['aggregated_files'] += len(aggregated_items)
+        self.stats['total_segments'] += len(batch.items)
         self.stats['processing_time'] += time.time() - start_time
         
         # 创建新的批次
-        new_batch = DataBatch(
+        new_batch = BatchData(
             batch_id=f"{batch.batch_id}_aggregated",
             items=aggregated_items,
             metadata={
@@ -216,101 +185,57 @@ class SegmentAggregationStage(PipelineStage):
         
         return new_batch
     
-    def _group_by_file(self, items: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-        """按文件ID分组items"""
-        file_groups = {}
-        
-        for item in items:
-            file_id = item.get('file_id')
-            if file_id not in file_groups:
-                file_groups[file_id] = []
-            file_groups[file_id].append(item)
-        
-        return file_groups
-    
-    def _aggregate_file_results(self, file_id: str, segments: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """聚合单个文件的结果"""
-        # 检查是否有错误
-        error_segments = [s for s in segments if 'error' in s]
-        if error_segments:
-            return {
-                'file_id': file_id,
-                'error': f"Segments contain errors: {len(error_segments)} failed segments",
-                'segments': [],
-                'transcription': '',
-                'confidence': 0.0
-            }
-        
-        # 排序segments（如果需要）
+    def _aggregate_segments(self, file_id: str, segments: List[InferenceItem]) -> FileResultItem:
+        """聚合单个文件的segment结果"""
+        # 排序 segments
         if self.sort_by_timestamp:
-            segments.sort(key=lambda s: s.get('start_time', 0))
+            sorted_segments = sorted(segments, key=lambda s: s.start_time)
+        else:
+            sorted_segments = segments
         
-        # 提取转录结果
-        transcriptions = []
-        total_confidence = 0.0
-        total_speech_duration = 0.0
-        
-        segment_details = []
-        for segment in segments:
-            transcription = segment.get('transcription', '')
-            confidence = segment.get('confidence', 0.0)
-            duration = segment.get('duration', 0.0)
-            
-            transcriptions.append(transcription)
-            total_confidence += confidence
-            total_speech_duration += duration
-            
-            if self.include_segment_details:
-                segment_details.append({
-                    'segment_id': segment.get('segment_id'),
-                    'start_time': segment.get('start_time'),
-                    'end_time': segment.get('end_time'),
-                    'duration': duration,
-                    'transcription': transcription,
-                    'confidence': confidence
-                })
-        
-        # 计算聚合统计
-        avg_confidence = total_confidence / len(segments) if segments else 0.0
+        # 聚合转录
+        transcriptions = [s.transcription for s in sorted_segments]
         full_transcription = ' '.join(transcriptions)
         
-        # 从第一个segment获取原始元数据（所有segment共享相同的原始元数据）
-        first_segment = segments[0] if segments else {}
+        # 构建segment详情
+        segment_details = []
+        if self.include_segment_details:
+            for s in sorted_segments:
+                segment_details.append({
+                    'segment_id': s.segment_id,
+                    'start_time': s.start_time,
+                    'end_time': s.end_time,
+                    'duration': s.metadata.get('duration', 0.0),
+                    'transcription': s.transcription,
+                    'confidence': s.confidence
+                })
         
-        # 构建聚合结果
-        aggregated_result = {
-            'file_id': file_id,
-            'transcription': full_transcription,
-            'confidence': avg_confidence,
-            'num_segments': len(segments),
-            'total_speech_duration': total_speech_duration,
-            'processing_timestamp': time.time(),
-            # 保留原始item中的所有重要字段，确保PostProcessingStage能访问
-            'duration': first_segment.get('original_duration', total_speech_duration),
-            'sample_rate': first_segment.get('sample_rate', 16000),
-            'oss_path': first_segment.get('oss_path', ''),
-            'format': first_segment.get('format', 'wav'),
-            'audio_metadata': first_segment.get('audio_metadata', {}),
-            'audio_tensor': first_segment.get('audio_tensor', {}),
-            'metadata': first_segment.get('metadata', {})
+        # 统计信息
+        stats = {
+            'num_segments': len(sorted_segments),
+            'avg_confidence': sum(s.confidence for s in sorted_segments) / len(sorted_segments) if sorted_segments else 0.0,
+            'total_duration': sorted_segments[0].original_duration if sorted_segments else 0.0
         }
         
-        # 添加详细信息（如果需要）
-        if self.include_segment_details:
-            aggregated_result['segments'] = segment_details
-        
-        # 添加文件级别统计（如果需要）
-        if self.calculate_file_stats:
-            original_duration = segments[0].get('original_duration', total_speech_duration) if segments else 0.0
-            speech_ratio = total_speech_duration / original_duration if original_duration > 0 else 0.0
-            
-            aggregated_result.update({
+        # 添加文件级别统计
+        if self.calculate_file_stats and sorted_segments:
+            total_speech_duration = sum(s.metadata.get('duration', 0.0) for s in sorted_segments)
+            original_duration = sorted_segments[0].original_duration
+            stats.update({
                 'original_duration': original_duration,
-                'speech_ratio': speech_ratio,
-                'avg_segment_duration': total_speech_duration / len(segments) if segments else 0.0
+                'speech_duration': total_speech_duration,
+                'speech_ratio': total_speech_duration / original_duration if original_duration > 0 else 0.0,
+                'avg_segment_duration': total_speech_duration / len(sorted_segments)
             })
         
-        return aggregated_result
+        return FileResultItem(
+            file_id=file_id,
+            transcription=full_transcription,
+            segments=segment_details,
+            stats=stats,
+            metadata=sorted_segments[0].metadata if sorted_segments else {}
+        )
+    
     
     def get_stats(self) -> Dict[str, Any]:
         """获取处理统计信息"""

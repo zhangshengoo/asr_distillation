@@ -8,8 +8,8 @@ import ray
 import numpy as np
 
 from src.compute.vad import VADProcessor, AudioSegment, VADResult
-from src.compute.audio_processor import PipelineStage
-from src.scheduling.pipeline import DataBatch
+from src.scheduling.pipeline import PipelineStage
+from src.common import BatchData, TensorItem, SegmentItem
 
 
 class VADProcessingStage(PipelineStage):
@@ -41,68 +41,62 @@ class VADProcessingStage(PipelineStage):
         
         self.vad_processor = VADProcessor(self.vad_config)
     
-    def process(self, batch: DataBatch) -> DataBatch:
+    def _vad_process(self, item: TensorItem) -> TensorItem:
+        """Process VAD for single item"""
+        try:
+             # TensorItem has waveform as numpy array as per definition
+             audio_data = item.waveform
+             sample_rate = item.sample_rate
+             
+             vad_result = self.vad_processor.process_audio(item.file_id, audio_data, sample_rate)
+             segments = self.vad_processor.segment_audio(
+                item.file_id, audio_data, sample_rate, vad_result
+             )
+             
+             # Enrich item metadata with VAD results
+             # But TensorItem is typed. We can't just add fields dynamically if we want strict typing.
+             # However, common implementation allows metadata dict.
+             # Or we assume downstream expansion stage handles this.
+             # But existing logic puts 'segments' directly on item dict.
+             # Let's verify common.py again. 
+             # TensorItem inherits SourceItem (metadata dict).
+             # We can put vad results in metadata.
+             
+             new_metadata = item.metadata.copy()
+             new_metadata.update({
+                 'vad_result': vad_result,
+                 'segments': segments,
+                 'original_duration': vad_result.original_duration,
+                 'speech_ratio': vad_result.speech_ratio,
+                 'num_segments': len(segments)
+             })
+
+             return TensorItem(
+                 file_id=item.file_id,
+                 oss_path=item.oss_path,
+                 format=item.format,
+                 duration=item.duration,
+                 metadata=new_metadata,
+                 waveform=item.waveform,
+                 sample_rate=item.sample_rate
+             )
+        except Exception as e:
+            return None
+
+    def process(self, batch: BatchData[TensorItem]) -> BatchData[TensorItem]:
         """处理音频批次"""
         start_time = time.time()
-        results = []
         
-        # 从batch.items中获取数据
-        for item in batch.items:
-            file_id = item.get('file_id')
-            
-            # 检查是否有错误 - 不处理有错误的项目，直接跳过
-            if 'error' in item:
-                continue  # 不将错误项目加入结果
-                
-            # 处理音频数据
-            audio_data = item.get('audio_data')
-            sample_rate = item.get('sample_rate')
-            
-            # 验证音频数据有效性
-            assert audio_data is not None, f"Audio data is None for file {file_id}"
-            assert sample_rate is not None, f"Sample rate is None for file {file_id}"
-            
-            # 执行VAD处理
-            vad_result = self.vad_processor.process_audio(file_id, audio_data, sample_rate)
-            
-            # 根据VAD结果切分音频
-            segments = self.vad_processor.segment_audio(
-                file_id, audio_data, sample_rate, vad_result
-            )
-            
-            # 构建输出结果
-            result = {
-                'file_id': file_id,
-                'vad_result': vad_result,
-                'segments': segments,
-                'original_duration': vad_result.original_duration,
-                'speech_ratio': vad_result.speech_ratio,
-                'num_segments': len(segments),
-                # 继承原始项目中的其他字段
-                **{k: v for k, v in item.items() if k not in ['audio_data', 'sample_rate']}
-            }
-            
-            results.append(result)
-            
-            # 更新统计信息
-            self.stats['processed_files'] += 1
-            self.stats['total_segments'] += len(segments)
-            self.stats['total_speech_duration'] += vad_result.total_speech_duration
-    
+        # 使用 map 处理
+        new_batch = batch.map(self._vad_process, new_batch_id=f"{batch.batch_id}_vad_processed")
+
         # 更新处理时间
         self.stats['processing_time'] += time.time() - start_time
-        
-        # 创建新的DataBatch并返回
-        new_batch = DataBatch(
-            batch_id=f"{batch.batch_id}_vad_processed",
-            items=results,
-            metadata={
-                **batch.metadata,
-                'stage': 'vad_processing',
-                'processed_items': len(results),
-                'processing_time': self.stats['processing_time']
-            }
-        )
+        # Use existing metadata update logic if needed or just return new_batch
+        new_batch.metadata.update({
+             'stage': 'vad_processing',
+             'processing_time': self.stats['processing_time']
+        })
         
         return new_batch
     

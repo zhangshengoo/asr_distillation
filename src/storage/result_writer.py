@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 
 from ..data.storage import AudioStorageManager
-from ..scheduling.pipeline import DataBatch
+from ..common import BatchData, FileResultItem
 
 
 @dataclass
@@ -309,35 +309,43 @@ class ResultWriterStage:
         
         self.async_writer = AsyncResultWriter(write_config, storage_manager)
         
-    async def process_batch(self, batch: DataBatch) -> DataBatch:
+    async def process_batch(self, batch: BatchData) -> BatchData:
         """Process batch and write results"""
         try:
             # Extract results from batch
             results = []
             for item in batch.items:
-                if 'error' not in item and 'output' in item:
-                    results.append(item['output'])
-                elif 'error' in item:
-                    # Write error items too
-                    error_result = {
-                        'file_id': item['file_id'],
-                        'error': item['error'],
-                        'timestamp': time.time()
-                    }
-                    results.append(error_result)
-            
+                if not isinstance(item, FileResultItem):
+                    continue
+                    
+                # Format for writer: It expects a dict with 'file_id', 'transcription', etc.
+                # Or we update AsyncResultWriter to take FileResultItem.
+                # Assuming AsyncResultWriter expects dicts usually.
+                # We convert item to dict or adapt.
+                
+                # Let's look at AsyncResultWriter.write_batch signature (not visible but usually generic).
+                # We'll construct the dict expected by standard writers.
+                result_dict = {
+                    'file_id': item.file_id,
+                    'transcription': item.transcription,
+                    'segments': item.segments,
+                    'metadata': item.metadata
+                }
+                results.append(result_dict)
+
             # Write results asynchronously
             if results:
                 await self.async_writer.write_batch(results)
-            
+                
             # Update batch metadata
-            batch.metadata['results_written'] = len(results)
             batch.metadata['stage'] = 'result_writer'
+            batch.metadata['results_written'] = len(results)
             
             return batch
             
         except Exception as e:
-            batch.metadata['writer_error'] = str(e)
+            logger.error(f"Error writing batch results: {e}")
+            batch.metadata['error'] = str(e)
             return batch
     
     async def start(self) -> None:
@@ -361,11 +369,15 @@ class BatchResultAggregator:
         self.aggregated_results = []
         self.start_time = time.time()
         
-    def add_batch_results(self, batch: DataBatch) -> None:
+    def add_batch_results(self, batch: BatchData[FileResultItem]) -> None:
         """Add results from a batch"""
         for item in batch.items:
-            if 'output' in item:
-                self.aggregated_results.append(item['output'])
+            if isinstance(item, FileResultItem):
+                self.aggregated_results.append({
+                    'file_id': item.file_id,
+                    'transcription': item.transcription,
+                    'stats': item.stats
+                })
                 
     def get_summary(self) -> Dict[str, Any]:
         """Get aggregation summary"""

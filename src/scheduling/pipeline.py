@@ -11,7 +11,9 @@ from ray.util.queue import Queue
 
 # 从配置管理器导入PipelineConfig
 from src.config.manager import PipelineConfig
-from src.common import DataBatch
+# 从配置管理器导入PipelineConfig
+from src.config.manager import PipelineConfig
+from src.common import BatchData, SourceItem
 
 
 class PipelineStage(ABC):
@@ -21,7 +23,7 @@ class PipelineStage(ABC):
         self.config = config
         
     @abstractmethod
-    def process(self, batch: DataBatch) -> DataBatch:
+    def process(self, batch: BatchData) -> BatchData:
         """Process a batch of data"""
         pass
 
@@ -51,7 +53,7 @@ class DataProducer:
         return df.to_dict('records')
     
     def produce_batches(self, 
-                       max_batches: Optional[int] = None) -> List[DataBatch]:
+                       max_batches: Optional[int] = None) -> List[BatchData[SourceItem]]:
         """Produce data batches"""
         audio_records = self.load_index()
         
@@ -64,9 +66,22 @@ class DataProducer:
         batches = []
         for i in range(0, len(remaining_records), self.batch_size):
             batch_records = remaining_records[i:i + self.batch_size]
-            batch = DataBatch(
+            
+            # Convert dict records to SourceItem objects
+            items = []
+            for record in batch_records:
+                items.append(SourceItem(
+                    file_id=record['file_id'],
+                    oss_path=record['oss_path'],
+                    format=record.get('format', 'wav'),
+                    duration=record.get('duration', 0.0),
+                    metadata={k: v for k, v in record.items() 
+                             if k not in ['file_id', 'oss_path', 'format', 'duration']}
+                ))
+            
+            batch = BatchData(
                 batch_id=f"batch_{i // self.batch_size}",
-                items=batch_records,
+                items=items,
                 metadata={'stage': 'producer'}
             )
             batches.append(batch)
@@ -92,7 +107,7 @@ class PipelineWorker:
         self.worker_id = worker_id
         self.stage = stage_class(stage_config)
         
-    def process_batch(self, batch: DataBatch) -> DataBatch:
+    def process_batch(self, batch: BatchData) -> BatchData:
         """Process a single batch"""
         try:
             result = self.stage.process(batch)
@@ -177,7 +192,7 @@ class DistributedPipeline:
     
     def run_pipeline(self, 
                     max_batches: Optional[int] = None,
-                    progress_callback: Optional[Callable] = None) -> List[DataBatch]:
+                    progress_callback: Optional[Callable] = None) -> List[BatchData]:
         """Run the distributed pipeline (legacy method)"""
         if not self.producer:
             raise ValueError("Producer not setup. Call setup_producer() first.")
@@ -217,7 +232,7 @@ class DistributedPipeline:
         processed_file_ids = []
         for batch in processed_batches:
             if 'error' not in batch.metadata:
-                processed_file_ids.extend([item['file_id'] for item in batch.items])
+                processed_file_ids.extend([item.file_id for item in batch.items])
         
         if processed_file_ids:
             self.producer.mark_processed.remote(processed_file_ids)
@@ -227,7 +242,7 @@ class DistributedPipeline:
     def run_multi_stage_pipeline(self, 
                                 stages_config: List[Dict[str, Any]],
                                 max_batches: Optional[int] = None,
-                                progress_callback: Optional[Callable] = None) -> List[DataBatch]:
+                                progress_callback: Optional[Callable] = None) -> List[BatchData]:
         """Run multi-stage pipeline with linear data flow"""
         if not self.producer:
             raise ValueError("Producer not setup. Call setup_producer() first.")
@@ -282,7 +297,7 @@ class DistributedPipeline:
         processed_file_ids = []
         for batch in current_batches:
             if 'error' not in batch.metadata:
-                processed_file_ids.extend([item['file_id'] for item in batch.items])
+                processed_file_ids.extend([item.file_id for item in batch.items])
         
         if processed_file_ids:
             self.producer.mark_processed.remote(processed_file_ids)
@@ -392,7 +407,7 @@ class PipelineOrchestrator:
     
     def run(self, 
             max_batches: Optional[int] = None,
-            progress_callback: Optional[Callable] = None) -> List[DataBatch]:
+            progress_callback: Optional[Callable] = None) -> List[BatchData]:
         """Run the complete pipeline"""
         return self.pipeline.run_multi_stage_pipeline(
             self.stages_config, max_batches, progress_callback

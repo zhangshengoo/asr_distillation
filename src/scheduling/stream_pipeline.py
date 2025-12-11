@@ -24,7 +24,7 @@ from loguru import logger
 
 # 从配置管理器导入PipelineConfig
 from src.config.manager import PipelineConfig
-from src.common import DataBatch
+from src.common import BatchData, SourceItem
 
 
 class PipelineStage(ABC):
@@ -34,7 +34,7 @@ class PipelineStage(ABC):
         self.config = config
         
     @abstractmethod
-    def process(self, batch: DataBatch) -> DataBatch:
+    def process(self, batch: BatchData) -> BatchData:
         """Process a batch of data"""
         pass
 
@@ -125,9 +125,21 @@ class StreamingDataProducer:
                     break
                 
                 batch_records = remaining_records[i:i + self.batch_size]
-                batch = DataBatch(
+                # Convert records to SourceItem objects
+                items = [
+                    SourceItem(
+                        file_id=r['file_id'],
+                        oss_path=r['oss_path'],
+                        format=r.get('format', 'wav'),
+                        duration=r.get('duration', 0.0),
+                        metadata={k: v for k, v in r.items() 
+                                 if k not in ['file_id', 'oss_path', 'format', 'duration']}
+                    ) for r in batch_records
+                ]
+
+                batch = BatchData(
                     batch_id=f"batch_{self.total_produced}",
-                    items=batch_records,
+                    items=items,
                     metadata={'stage': 'producer', 'batch_index': self.total_produced}
                 )
                 
@@ -507,7 +519,7 @@ class StreamingPipelineOrchestrator:
                 logger.error(f"Error in progress monitoring: {e}")
                 break
     
-    def _collect_results(self) -> List[DataBatch]:
+    def _collect_results(self) -> List[BatchData]:
         """收集Pipeline结果"""
         results = []
         result_queue = self.stage_queues.get('results')
@@ -527,7 +539,7 @@ class StreamingPipelineOrchestrator:
     
     def _compute_stats(self,
                       worker_stats: Dict[str, List[Dict]],
-                      results: List[DataBatch]) -> Dict[str, Any]:
+                      results: List[BatchData]) -> Dict[str, Any]:
         """计算Pipeline统计信息"""
         total_duration = time.time() - self.start_time
         
@@ -619,7 +631,7 @@ class PipelineOrchestrator:
     
     def run(self,
             max_batches: Optional[int] = None,
-            progress_callback: Optional[Callable] = None) -> List[DataBatch]:
+            progress_callback: Optional[Callable] = None) -> List[BatchData]:
         """运行Pipeline（向后兼容接口）"""
         stats = self.orchestrator.run(max_batches, progress_callback)
         

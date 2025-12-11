@@ -7,6 +7,7 @@ from typing import Dict, List, Any
 from dataclasses import dataclass
 
 import torch
+import numpy as np
 from vllm import SamplingParams, AsyncLLMEngine
 from vllm.engine.arg_utils import AsyncEngineArgs
 from transformers import Qwen3OmniMoeProcessor
@@ -16,7 +17,7 @@ os.environ['VLLM_USE_V1'] = '0'
 os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 os.environ["VLLM_LOGGING_LEVEL"] = "ERROR"
 
-from ..scheduling.pipeline import PipelineStage, DataBatch
+from ..common import BatchData, SegmentItem, InferenceItem, FileResultItem
 
 # Import Qwen3-Omni utilities
 from qwen_omni_utils import process_mm_info
@@ -56,19 +57,18 @@ class AudioModelProcessor:
         )
     
     def prepare_inputs(self, 
-                      audio_features: torch.Tensor,
+                      audio_features: np.ndarray,
                       sample_rate: int,
                       prompt: str = "请将这段语音转换为纯文本。") -> Dict[str, Any]:
         """Prepare inputs for Qwen3-Omni model"""
-        # Convert audio tensor to numpy array
-        audio_array = audio_features.numpy()
+        # audio_features is already numpy array from SegmentItem.waveform
         
         # Create messages in Qwen3-Omni format
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "audio", "audio": audio_array},
+                    {"type": "audio", "audio": audio_features},
                     {"type": "text", "text": prompt},
                 ]
             }
@@ -185,26 +185,46 @@ class BatchInferenceStage(PipelineStage):
         self.model_processor = AudioModelProcessor(inference_config)
         self.prompt_template = config.get('prompt_template', '请将这段语音转换为纯文本。')
         
-    async def process_async(self, batch: DataBatch) -> DataBatch:
+    async def process_async(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
         """Async processing method"""
-        # Filter valid items (skip error items)
-        valid_items = [item for item in batch.items if 'error' not in item]
-        
-        if not valid_items:
-            return DataBatch(
+        if not batch.items:
+            return BatchData(
                 batch_id=batch.batch_id,
                 items=[],
                 metadata={**batch.metadata, 'stage': 'batch_inference'}
             )
         
+        # Filter out items with empty waveforms to prevent vLLM errors
+        valid_items = []
+        for item in batch.items:
+            if item.waveform is None:
+                print(f"⚠️  Warning: Skipping None waveform for {item.segment_id}")
+                continue
+            if item.waveform.size == 0:
+                print(f"⚠️  Warning: Skipping empty waveform for {item.segment_id}, shape={item.waveform.shape}")
+                continue
+            valid_items.append(item)
+        
+        if not valid_items:
+            print(f"⚠️  Warning: Batch {batch.batch_id} has no valid waveforms, skipping inference")
+            return BatchData(
+                batch_id=batch.batch_id,
+                items=[],
+                metadata={**batch.metadata, 'stage': 'batch_inference', 'skipped_reason': 'all_empty_waveforms'}
+            )
+        
+        # Log if some items were filtered
+        if len(valid_items) < len(batch.items):
+            print(f"⚠️  Filtered {len(batch.items) - len(valid_items)} items with empty waveforms from batch {batch.batch_id}")
+        
         # Prepare batch inputs
         batch_inputs = []
         for item in valid_items:
-            audio_features = item['audio_features']
-            sample_rate = item.get('sample_rate', 16000)
+            # item.waveform is already numpy array from SegmentItem
+            sample_rate = item.metadata.get('sample_rate', 16000)
             
             inputs = self.model_processor.prepare_inputs(
-                audio_features,
+                item.waveform,  # Direct numpy array, no conversion needed
                 sample_rate,
                 self.prompt_template
             )
@@ -213,19 +233,33 @@ class BatchInferenceStage(PipelineStage):
         # Batch inference (errors will raise)
         transcriptions = await self.inference_engine.generate_batch_async(batch_inputs)
         
-        # Update results
+        # Create InferenceItem objects
+        inference_items = []
         for item, transcription in zip(valid_items, transcriptions):
-            item['transcription'] = transcription
-            item['confidence'] = 0.0
-            item['inference_timestamp'] = time.time()
+            inference_item = InferenceItem(
+                file_id=item.file_id,
+                parent_file_id=item.parent_file_id,
+                segment_id=item.segment_id,
+                segment_index=item.segment_index,
+                start_time=item.start_time,
+                end_time=item.end_time,
+                waveform=item.waveform,
+                original_duration=item.original_duration,
+                oss_path=item.oss_path,
+                metadata=item.metadata,
+                transcription=transcription,
+                confidence=0.95,
+                inference_timestamp=time.time()
+            )
+            inference_items.append(inference_item)
         
-        return DataBatch(
+        return BatchData(
             batch_id=batch.batch_id,
-            items=valid_items,
+            items=inference_items,
             metadata={**batch.metadata, 'stage': 'batch_inference'}
         )
     
-    def process(self, batch: DataBatch) -> DataBatch:
+    def process(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
         """Sync wrapper for compatibility"""
         try:
             loop = asyncio.get_event_loop()
@@ -245,39 +279,42 @@ class PostProcessingStage(PipelineStage):
         super().__init__(config)
         self.output_format = config.get('output_format', 'json')
         
-    def process(self, batch: DataBatch) -> DataBatch:
+    def process(self, batch: BatchData[FileResultItem]) -> BatchData[FileResultItem]:
         """Post-process inference results"""
         processed_items = []
         
         for item in batch.items:
-            transcription = item.get('transcription', '')
-            
             # Clean up transcription
-            cleaned_transcription = transcription.strip()
+            cleaned_transcription = item.transcription.strip()
             
             # Format output
             if self.output_format == 'json':
                 output = {
-                    'file_id': item['file_id'],
+                    'file_id': item.file_id,
                     'transcription': cleaned_transcription,
-                    'timestamp': item.get('inference_timestamp', time.time()),
+                    'timestamp': time.time(),
                     'metadata': {
-                        'duration': item.get('duration', 0),
-                        'sample_rate': item.get('sample_rate', 16000)
+                        'stats': item.stats
                     }
                 }
             else:
                 output = {
-                    'file_id': item['file_id'],
+                    'file_id': item.file_id,
                     'text': cleaned_transcription
                 }
             
-            item['output'] = output
-            item['transcription'] = cleaned_transcription
-            
-            processed_items.append(item)
+            # Create updated FileResultItem with output
+            updated_item = FileResultItem(
+                file_id=item.file_id,
+                transcription=cleaned_transcription,
+                segments=item.segments,
+                stats=item.stats,
+                metadata=item.metadata,
+                output=output
+            )
+            processed_items.append(updated_item)
         
-        return DataBatch(
+        return BatchData(
             batch_id=batch.batch_id,
             items=processed_items,
             metadata={**batch.metadata, 'stage': 'post_processing'}
