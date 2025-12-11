@@ -2,6 +2,7 @@
 
 import os
 import time
+import asyncio
 from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass
 import json
@@ -67,18 +68,15 @@ class AudioModelProcessor:
                       sample_rate: int,
                       prompt: str = "请将这段语音转换为纯文本。") -> Dict[str, Any]:
         """Prepare inputs for Qwen3-Omni model"""
-        # Convert audio tensor to the format expected by Qwen3-Omni
-        audio_data = {
-            'array': audio_features.numpy(),
-            'sampling_rate': sample_rate
-        }
+        # Convert audio tensor directly to numpy array (not dict) as expected by qwen_omni_utils
+        audio_array = audio_features.numpy()
         
         # Create messages in Qwen3-Omni format
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "audio", "audio": audio_data},
+                    {"type": "audio", "audio": audio_array},
                     {"type": "text", "text": prompt},
                 ]
             }
@@ -140,10 +138,31 @@ class VLLMInferenceEngine:
         
         self.engine = AsyncLLMEngine.from_engine_args(engine_args)
     
+    async def _generate_single_async(self, 
+                                   inputs: Dict[str, Any],
+                                   sampling_params: Optional[SamplingParams],
+                                   request_id: str) -> str:
+        """Internal method to handle single audio async inference"""
+        try:
+            results = []
+            async for request_output in self.engine.generate(
+                inputs['prompt'], 
+                sampling_params, 
+                request_id,
+                multi_modal_data=inputs.get('multi_modal_data', {}),
+                mm_processor_kwargs=inputs.get('mm_processor_kwargs', {})
+            ):
+                results.append(request_output.outputs[0].text)
+            
+            return results[-1] if results else ""
+        except Exception as e:
+            # Return error message instead of raising exception
+            return f"Error during inference: {str(e)}"
+    
     async def generate_async(self, 
                            inputs: Dict[str, Any],
                            sampling_params: Optional[SamplingParams] = None) -> str:
-        """Generate text asynchronously"""
+        """Generate text asynchronously for single input"""
         if sampling_params is None:
             sampling_params = SamplingParams(
                 temperature=self.config.temperature,
@@ -155,15 +174,39 @@ class VLLMInferenceEngine:
         # Generate using vLLM
         request_id = f"req_{int(time.time() * 1000000)}"
         
-        # For simplicity, we'll use a text-based approach
-        # In practice, you'd need to handle the multimodal inputs properly
-        text_input = inputs.get('text', 'Transcribe the audio:')
+        return await self._generate_single_async(inputs, sampling_params, request_id)
+    
+    async def generate_batch_async(self, 
+                                 batch_inputs: List[Dict[str, Any]], 
+                                 sampling_params: Optional[SamplingParams] = None) -> List[str]:
+        """Generate text asynchronously for batch inputs"""
+        if sampling_params is None:
+            sampling_params = SamplingParams(
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                top_p=self.config.top_p,
+                repetition_penalty=self.config.repetition_penalty
+            )
         
-        results = []
-        async for request_output in self.engine.generate(text_input, sampling_params, request_id):
-            results.append(request_output.outputs[0].text)
+        # Create tasks for concurrent processing
+        tasks = []
+        for i, inputs in enumerate(batch_inputs):
+            request_id = f"batch_req_{int(time.time() * 1000000)}_{i}"
+            task = self._generate_single_async(inputs, sampling_params, request_id)
+            tasks.append(task)
         
-        return results[-1] if results else ""
+        # Execute all tasks concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results and handle any exceptions
+        processed_results = []
+        for result in results:
+            if isinstance(result, Exception):
+                processed_results.append(f"Error during batch inference: {str(result)}")
+            else:
+                processed_results.append(result)
+        
+        return processed_results
 
 class AudioInferenceStage(PipelineStage):
     """Stage for audio inference using vLLM"""
@@ -242,8 +285,10 @@ class BatchInferenceStage(PipelineStage):
             batch_inputs = []
             for item in batch_items:
                 audio_features = item['audio_features']
+                # 准备输入，使用正确的sample_rate
                 inputs = self.inference_engine.model_processor.prepare_inputs(
                     audio_features,
+                    item.get('sample_rate', 16000),
                     self.prompt_template
                 )
                 batch_inputs.append(inputs)
@@ -255,11 +300,14 @@ class BatchInferenceStage(PipelineStage):
             for item, result in zip(batch_items, batch_results):
                 item['transcription'] = result
                 item['inference_timestamp'] = time.time()
+
                 # 为segment级别的处理添加置信度（如果模型提供）
                 if isinstance(result, dict) and 'confidence' in result:
                     item['confidence'] = result['confidence']
                 else:
-                    item['confidence'] = 0.0  # 默认值
+                    # 其他情况也使用默认置信度
+                    item['confidence'] = 0.0
+                
                 processed_items.append(item)
                     
         # Create new batch with inference results - exclude error items
@@ -276,12 +324,30 @@ class BatchInferenceStage(PipelineStage):
         # This is a placeholder for actual batched vLLM integration
         # In practice, you'd implement proper batched inference
         
-        results = []
-        for inputs in batch_inputs:
-            # Replace with actual inference
-            result = f"Batch transcription for input {len(results)}"
-            results.append(result)
-            
+        # 使用线程池来处理异步事件循环问题
+        import asyncio
+        import concurrent.futures
+        from threading import Thread
+        
+        # 使用异步方法进行批量推理
+        async def run_async_batch():
+            return await self.inference_engine.generate_batch_async(batch_inputs)
+        
+        # 在新线程中运行异步函数
+        def run_in_thread():
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(run_async_batch())
+            finally:
+                loop.close()
+        
+        # 使用线程池运行异步函数
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(run_in_thread)
+            results = future.result()
+        
         return results
 
 

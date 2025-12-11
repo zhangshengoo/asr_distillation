@@ -94,12 +94,15 @@ async def run_pipeline(config_path: str,
         # Enable multimedia processing if configured
         enable_multimedia = config.media is not None
         
+        # 获取stage_workers配置
+        stage_workers_config = config.pipeline.stage_workers
+        
         stages_config = [
             {
                 'type': 'cpu',
                 'class': AudioDownloadStage,
                 'name': 'audio_download',
-                'num_workers': 5,  # IO密集型，需要较多worker
+                'num_workers': stage_workers_config.get('audio_download', 8),  # IO密集型
                 'config': {
                     **cpu_stage_config,
                     'enable_multimedia': enable_multimedia,
@@ -110,14 +113,14 @@ async def run_pipeline(config_path: str,
                 'type': 'cpu',
                 'class': AudioPreprocessingStage,
                 'name': 'audio_preprocessing',
-                'num_workers': 10,  # CPU密集型
+                'num_workers': stage_workers_config.get('audio_preprocessing', 6),  # CPU密集型
                 'config': cpu_stage_config
             },
             {
                 'type': 'cpu',
                 'class': VADProcessingStage,
                 'name': 'vad_processing',
-                'num_workers': config.vad.parallel_workers,
+                'num_workers': stage_workers_config.get('vad_processing', 4),  # 并行处理
                 'config': {
                     'vad': config.vad.__dict__,
                     'batch_size': config.pipeline.batch_size
@@ -127,7 +130,7 @@ async def run_pipeline(config_path: str,
                 'type': 'cpu',
                 'class': SegmentExpansionStage,
                 'name': 'segment_expansion',
-                'num_workers': 4,  # 中等CPU需求
+                'num_workers': stage_workers_config.get('segment_expansion', 4),  # 中等CPU需求
                 'config': {
                     'min_segment_duration': 0.1,
                     'preserve_order': True
@@ -137,21 +140,21 @@ async def run_pipeline(config_path: str,
                 'type': 'cpu',
                 'class': AudioFeatureStage,
                 'name': 'feature_extraction',
-                'num_workers': 8,  # 中等CPU需求
+                'num_workers': stage_workers_config.get('feature_extraction', 6),  # 中等CPU需求
                 'config': cpu_stage_config
             },
             {
                 'type': 'gpu',
                 'class': BatchInferenceStage,  # 使用批处理优化
                 'name': 'batch_inference',
-                'num_workers': 2,  # GPU密集型，少worker
+                'num_workers': stage_workers_config.get('batch_inference', 1),  # GPU密集型
                 'config': gpu_stage_config
             },
             {
-                'type': 'gpu',
+                'type': 'cpu',  # 使用CPU资源即可，聚合是轻量级处理
                 'class': SegmentAggregationStage,
                 'name': 'segment_aggregation',
-                'num_workers': 2,  # 轻量级处理
+                'num_workers': stage_workers_config.get('segment_aggregation', 2),  # 轻量级处理
                 'config': {
                     'sort_by_timestamp': True,
                     'include_segment_details': True,
@@ -159,10 +162,10 @@ async def run_pipeline(config_path: str,
                 }
             },
             {
-                'type': 'gpu',
+                'type': 'cpu',  # 使用CPU资源即可，后处理是轻量级处理
                 'class': PostProcessingStage,
                 'name': 'post_processing',
-                'num_workers': 3,  # 轻量级处理
+                'num_workers': stage_workers_config.get('post_processing', 2),  # 轻量级处理
                 'config': gpu_stage_config
             }
         ]

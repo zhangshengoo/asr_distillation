@@ -55,15 +55,23 @@ class ParquetIndexer(MediaIndexer):
         metadata_list = []
         
         for file_info in media_files:
-            # 只保留可以从文件系统直接获取的信息
-            metadata = MediaMetadata(
-                file_id=file_info['file_id'],
-                oss_path=file_info['oss_path'], 
-                media_type=file_info.get('media_type', 'audio'),
-                size_bytes=file_info.get('size_bytes', 0),
-                checksum=file_info.get('checksum')
-            )
-            metadata_list.append(metadata.__dict__)
+            # 创建符合设计的item结构
+            item_record = {
+                'file_id': file_info['file_id'],
+                'oss_path': file_info['oss_path'],
+                'media_type': file_info.get('media_type', 'audio'),
+                'size_bytes': file_info.get('size_bytes', 0),
+                # metadata字段包含文件相关的元数据
+                'metadata': {
+                    'duration': None,  # 将在处理阶段填充
+                    'format': None,    # 将在处理阶段填充
+                    'sample_rate': None,  # 将在处理阶段填充
+                    'channels': None,     # 将在处理阶段填充
+                    'bitrate': None,      # 将在处理阶段填充
+                    'checksum': file_info.get('checksum')
+                }
+            }
+            metadata_list.append(item_record)
             
         df = pd.DataFrame(metadata_list)
         self.save_index(df)

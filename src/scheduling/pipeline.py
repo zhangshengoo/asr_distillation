@@ -21,14 +21,40 @@ class PipelineConfig:
     max_concurrent_batches: int = 4
     object_store_memory: int = 1024 * 1024 * 1024  # 1GB
     checkpoint_interval: int = 1000
+    stage_workers: Dict[str, int] = None
+    
+    def __post_init__(self):
+        """初始化默认的stage_workers配置"""
+        if self.stage_workers is None:
+            self.stage_workers = {
+                'audio_download': 8,
+                'audio_preprocessing': 6,
+                'vad_processing': 4,
+                'segment_expansion': 4,
+                'feature_extraction': 6,
+                'batch_inference': 1,
+                'segment_aggregation': 2,
+                'post_processing': 2
+            }
 
 
 @dataclass
 class DataBatch:
-    """Data batch for pipeline processing"""
+    """Data batch for pipeline processing
+    
+    设计原则：
+    1. 每个item包含自己的metadata，表示原始文件的属性
+    2. batch.metadata用于批次级别的状态信息
+    3. 清晰分离批次状态信息和文件元数据信息
+    """
     batch_id: str
     items: List[Dict[str, Any]]
-    metadata: Dict[str, Any]
+    metadata: Dict[str, Any] = None
+    
+    def __post_init__(self):
+        """初始化默认metadata字典"""
+        if self.metadata is None:
+            self.metadata = {}
 
 
 class PipelineStage(ABC):
@@ -389,6 +415,8 @@ class PipelineOrchestrator:
             # Determine number of workers for this stage
             if 'num_workers' in stage_config:
                 num_workers = stage_config['num_workers']
+            elif stage_name in self.pipeline_config.stage_workers:
+                num_workers = self.pipeline_config.stage_workers[stage_name]
             else:
                 num_workers = (self.pipeline_config.num_cpu_workers 
                               if stage_type == 'cpu' 

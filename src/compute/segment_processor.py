@@ -125,6 +125,11 @@ class SegmentExpansionStage(PipelineStage):
             'original_duration': segment.original_duration,
             'segment_index': index,
             
+            # 保留原始item中的所有重要字段，确保后续阶段能访问
+            'oss_path': original_item.get('oss_path', ''),
+            'format': original_item.get('format', 'wav'),
+            'audio_metadata': original_item.get('audio_metadata', {}),
+            
             # VAD相关信息
             'speech_ratio': original_item.get('speech_ratio', 0.0),
             'num_segments': original_item.get('num_segments', 0),
@@ -265,6 +270,9 @@ class SegmentAggregationStage(PipelineStage):
         avg_confidence = total_confidence / len(segments) if segments else 0.0
         full_transcription = ' '.join(transcriptions)
         
+        # 从第一个segment获取原始元数据（所有segment共享相同的原始元数据）
+        first_segment = segments[0] if segments else {}
+        
         # 构建聚合结果
         aggregated_result = {
             'file_id': file_id,
@@ -272,7 +280,15 @@ class SegmentAggregationStage(PipelineStage):
             'confidence': avg_confidence,
             'num_segments': len(segments),
             'total_speech_duration': total_speech_duration,
-            'processing_timestamp': time.time()
+            'processing_timestamp': time.time(),
+            # 保留原始item中的所有重要字段，确保PostProcessingStage能访问
+            'duration': first_segment.get('original_duration', total_speech_duration),
+            'sample_rate': first_segment.get('sample_rate', 16000),
+            'oss_path': first_segment.get('oss_path', ''),
+            'format': first_segment.get('format', 'wav'),
+            'audio_metadata': first_segment.get('audio_metadata', {}),
+            'audio_tensor': first_segment.get('audio_tensor', {}),
+            'metadata': first_segment.get('metadata', {})
         }
         
         # 添加详细信息（如果需要）
