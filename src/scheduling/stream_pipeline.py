@@ -143,6 +143,8 @@ class StreamingDataProducer:
                     metadata={'stage': 'producer', 'batch_index': self.total_produced}
                 )
                 
+                logger.debug(f"[PRODUCER] Created batch '{batch.batch_id}' with {len(items)} SourceItems")
+                
                 # 将batch放入队列（会阻塞直到队列有空间）
                 try:
                     output_queue.put(batch, block=True, timeout=60)
@@ -207,6 +209,12 @@ class StreamingPipelineWorker:
         self.processed_count = 0
         self.error_count = 0
         self.total_processing_time = 0.0
+    
+    def _count_item_types(self, items: List) -> Dict[str, int]:
+        """统计items中各类型的数量"""
+        from collections import Counter
+        type_counts = Counter(type(item).__name__ for item in items)
+        return dict(type_counts)
         
     def process_stream(self,
                       input_queue: Queue,
@@ -230,7 +238,11 @@ class StreamingPipelineWorker:
                     
                     # 处理批次
                     start_time = time.time()
-                    logger.info(f"Worker {self.worker_id} processing batch {batch.batch_id} with {len(batch.items)} items")
+                    
+                    # 详细日志: 输入batch信息
+                    item_types = self._count_item_types(batch.items)
+                    logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 📥 INPUT batch '{batch.batch_id}' | items={len(batch.items)} | types={item_types}")
+                    
                     try:
                         # 根据Stage类型选择处理方式
                         if self.is_async_stage:
@@ -247,7 +259,16 @@ class StreamingPipelineWorker:
                         result.metadata['processed_at'] = time.time()
                         result.metadata['processing_time'] = time.time() - start_time
                         
-                        logger.info(f"Worker {self.worker_id} finished batch {batch.batch_id}: input={len(batch.items)}, output={len(result.items)}")
+                        # 详细日志: 输出batch信息
+                        output_item_types = self._count_item_types(result.items)
+                        processing_time = time.time() - start_time
+                        logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 📤 OUTPUT batch '{batch.batch_id}' | input={len(batch.items)} -> output={len(result.items)} | types={output_item_types} | time={processing_time:.2f}s")
+                        
+                        # 如果item数量变化明显，额外输出警告
+                        if len(result.items) == 0 and len(batch.items) > 0:
+                            logger.warning(f"[STAGE:{self.stage_name}] ⚠️ Batch '{batch.batch_id}' produced ZERO output items from {len(batch.items)} inputs!")
+                        elif len(result.items) > len(batch.items) * 10:
+                            logger.info(f"[STAGE:{self.stage_name}] 🔀 Batch '{batch.batch_id}' EXPANDED: {len(batch.items)} -> {len(result.items)} items (expansion stage)")
                         
                         # 放入输出队列
                         output_queue.put(result, block=True, timeout=60)
@@ -257,16 +278,22 @@ class StreamingPipelineWorker:
                         
                     except Exception as e:
                         import traceback
-                        logger.error(f"Worker {self.worker_id} processing error in stage '{self.stage_name}': {e}")
-                        logger.error(f"Traceback:\n{traceback.format_exc()}")
+                        logger.error(f"[STAGE:{self.stage_name}] ❌ ERROR processing batch '{batch.batch_id}': {e}")
+                        logger.error(f"[STAGE:{self.stage_name}] Traceback:\n{traceback.format_exc()}")
+                        
+                        # 输出batch中items的详细信息以便排查
+                        logger.error(f"[STAGE:{self.stage_name}] Failed batch details: items={len(batch.items)}, types={self._count_item_types(batch.items)}")
+                        if batch.items:
+                            first_item = batch.items[0]
+                            logger.error(f"[STAGE:{self.stage_name}] First item type: {type(first_item).__name__}, has metadata: {hasattr(first_item, 'metadata')}")
                         
                         # 重试逻辑
                         batch.retry_count += 1
                         if batch.retry_count <= self.max_retries:
-                            logger.info(f"Retrying batch {batch.batch_id} (attempt {batch.retry_count})")
+                            logger.warning(f"[STAGE:{self.stage_name}] 🔄 RETRY batch '{batch.batch_id}' (attempt {batch.retry_count}/{self.max_retries})")
                             input_queue.put(batch, block=True)
                         else:
-                            logger.error(f"Batch {batch.batch_id} failed after {self.max_retries} retries")
+                            logger.error(f"[STAGE:{self.stage_name}] 💀 DEAD LETTER: batch '{batch.batch_id}' failed after {self.max_retries} retries")
                             batch.metadata['error'] = str(e)
                             batch.metadata['error_traceback'] = traceback.format_exc()
                             batch.metadata['failed_worker'] = self.worker_id
@@ -294,7 +321,7 @@ class StreamingPipelineWorker:
                                        if self.processed_count > 0 else 0)
             }
             
-            logger.info(f"Worker {self.worker_id} completed: {stats}")
+            logger.info(f"[STAGE:{self.stage_name}] ✅ Worker '{self.worker_id}' COMPLETED | processed={self.processed_count} | errors={self.error_count} | avg_time={stats['avg_processing_time']:.2f}s")
             return stats
             
         finally:
@@ -394,7 +421,13 @@ class StreamingPipelineOrchestrator:
             
             self.stage_workers[stage_name] = workers
             
-            logger.info(f"Setup stage '{stage_name}': {num_workers} {stage_type} workers")
+            logger.info(f"Setup stage '{stage_name}': {num_workers} {stage_type} workers, queue_size={queue_size}")
+        
+        # 输出pipeline拓扑结构
+        stage_names = list(self.stage_queues.keys())
+        topology = " -> ".join(stage_names)
+        logger.info(f"[PIPELINE] 🔗 Topology: PRODUCER -> {topology} -> RESULTS")
+        logger.info(f"[PIPELINE] Total workers: {sum(len(w) for w in self.stage_workers.values())}")
         
         logger.info("Streaming pipeline setup completed")
     
@@ -502,20 +535,39 @@ class StreamingPipelineOrchestrator:
                 
                 # 收集队列状态
                 queue_stats = {}
+                queue_summary = []
                 for stage_name, queue in self.stage_queues.items():
+                    size = queue.qsize()
+                    maxsize = queue.maxsize
+                    usage_pct = (size / maxsize * 100) if maxsize > 0 else 0
                     queue_stats[stage_name] = {
-                        'size': queue.qsize(),
-                        'maxsize': queue.maxsize
+                        'size': size,
+                        'maxsize': maxsize,
+                        'usage_pct': usage_pct
                     }
+                    # 创建状态指示符
+                    if usage_pct > 80:
+                        indicator = '🔴'  # 队列接近满
+                    elif usage_pct > 50:
+                        indicator = '🟡'  # 中等负载
+                    elif usage_pct > 10:
+                        indicator = '🟢'  # 正常
+                    else:
+                        indicator = '⚪'  # 空闲
+                    queue_summary.append(f"{stage_name}:{size}/{maxsize}({usage_pct:.0f}%){indicator}")
                 
-                # 计算总体进度
-                total_processed = sum(
-                    len(workers) for workers in self.stage_workers.values()
-                )
+                # 输出队列状态汇总
+                elapsed = current_time - self.start_time if self.start_time else 0
+                logger.info(f"[PIPELINE] ⏱️ Elapsed: {elapsed:.1f}s | Queue Status: {' | '.join(queue_summary)}")
+                
+                # 检查潜在瓶颈
+                for stage_name, stats in queue_stats.items():
+                    if stats['usage_pct'] > 90:
+                        logger.warning(f"[PIPELINE] ⚠️ BACKPRESSURE: Queue '{stage_name}' is {stats['usage_pct']:.0f}% full!")
                 
                 # 调用进度回调
                 if progress_callback:
-                    progress_callback(total_processed, queue_stats)
+                    progress_callback(0, queue_stats)
                 
                 # 集成监控系统
                 if self.monitoring_system:
