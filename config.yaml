@@ -25,10 +25,21 @@ pipeline:
   
   cpu_worker_resources:
     num_cpus: 1
-    
+
   gpu_worker_resources:
     num_cpus: 1
     num_gpus: 1
+
+  # Stage-specific worker count configuration
+  stage_workers:
+    audio_download: 8        # IO-intensive stage
+    audio_preprocessing: 6   # CPU-intensive stage
+    vad_processing: 4        # Parallel processing stage
+    segment_expansion: 4     # Medium CPU requirement
+    feature_extraction: 6    # Medium CPU requirement
+    batch_inference: 1       # GPU-intensive stage
+    segment_aggregation: 2   # Lightweight processing
+    post_processing: 2       # Lightweight processing
 
 # 多媒体处理配置
 media:
