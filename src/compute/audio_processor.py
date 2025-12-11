@@ -12,7 +12,7 @@ import torchaudio
 import numpy as np
 
 from ..scheduling.pipeline import PipelineStage
-from ..common import BatchData, SourceItem, RawAudioItem, TensorItem
+from ..common import BatchData, SourceItem, RawAudioItem, TensorItem, SegmentItem
 from .media import (
     MediaDetector, 
     MediaType, 
