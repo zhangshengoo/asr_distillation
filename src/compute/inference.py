@@ -3,6 +3,7 @@
 import os
 import time
 import asyncio
+import logging
 from typing import Dict, List, Any
 from dataclasses import dataclass
 
@@ -180,6 +181,7 @@ class BatchInferenceStage(PipelineStage):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.logger = logging.getLogger("BatchInferenceStage")
         self.inference_config = InferenceConfig(**config.get('inference', {}))
         
         # Initialize components
@@ -194,7 +196,7 @@ class BatchInferenceStage(PipelineStage):
     def inference_engine(self):
         """Lazy initialization of inference engine"""
         if self._inference_engine is None:
-            print(f"Initializing vLLM engine on loop: {asyncio.get_event_loop()}")
+            self.logger.info(f"Initializing vLLM engine on loop: {asyncio.get_event_loop()}")
             self._inference_engine = VLLMInferenceEngine(self.inference_config)
         return self._inference_engine
         
@@ -211,15 +213,15 @@ class BatchInferenceStage(PipelineStage):
         valid_items = []
         for item in batch.items:
             if item.waveform is None:
-                print(f"⚠️  Warning: Skipping None waveform for {item.segment_id}")
+                self.logger.warning(f"Skipping None waveform for {item.segment_id}")
                 continue
             if item.waveform.size == 0:
-                print(f"⚠️  Warning: Skipping empty waveform for {item.segment_id}, shape={item.waveform.shape}")
+                self.logger.warning(f"Skipping empty waveform for {item.segment_id}, shape={item.waveform.shape}")
                 continue
             valid_items.append(item)
         
         if not valid_items:
-            print(f"⚠️  Warning: Batch {batch.batch_id} has no valid waveforms, skipping inference")
+            self.logger.warning(f"Batch {batch.batch_id} has no valid waveforms, skipping inference")
             return BatchData(
                 batch_id=batch.batch_id,
                 items=[],
@@ -228,7 +230,7 @@ class BatchInferenceStage(PipelineStage):
         
         # Log if some items were filtered
         if len(valid_items) < len(batch.items):
-            print(f"⚠️  Filtered {len(batch.items) - len(valid_items)} items with empty waveforms from batch {batch.batch_id}")
+            self.logger.warning(f"Filtered {len(batch.items) - len(valid_items)} items with empty waveforms from batch {batch.batch_id}")
         
         # Prepare batch inputs
         batch_inputs = []
@@ -285,6 +287,7 @@ class BatchInferenceStage(PipelineStage):
     def cleanup(self):
         """Cleanup resources"""
         if self._sync_loop is not None:
+            self.logger.info("Closing persistent sync loop")
             self._sync_loop.close()
             self._sync_loop = None
 
@@ -294,6 +297,7 @@ class PostProcessingStage(PipelineStage):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.logger = logging.getLogger("PostProcessingStage")
         self.output_format = config.get('output_format', 'json')
         
     def process(self, batch: BatchData[FileResultItem]) -> BatchData[FileResultItem]:
@@ -301,35 +305,38 @@ class PostProcessingStage(PipelineStage):
         processed_items = []
         
         for item in batch.items:
-            # Clean up transcription
-            cleaned_transcription = item.transcription.strip()
-            
-            # Format output
-            if self.output_format == 'json':
-                output = {
-                    'file_id': item.file_id,
-                    'transcription': cleaned_transcription,
-                    'timestamp': time.time(),
-                    'metadata': {
-                        'stats': item.stats
+            try:
+                # Clean up transcription
+                cleaned_transcription = item.transcription.strip()
+                
+                # Format output
+                if self.output_format == 'json':
+                    output = {
+                        'file_id': item.file_id,
+                        'transcription': cleaned_transcription,
+                        'timestamp': time.time(),
+                        'metadata': {
+                            'stats': item.stats
+                        }
                     }
-                }
-            else:
-                output = {
-                    'file_id': item.file_id,
-                    'text': cleaned_transcription
-                }
-            
-            # Create updated FileResultItem with output
-            updated_item = FileResultItem(
-                file_id=item.file_id,
-                transcription=cleaned_transcription,
-                segments=item.segments,
-                stats=item.stats,
-                metadata=item.metadata,
-                output=output
-            )
-            processed_items.append(updated_item)
+                else:
+                    output = {
+                        'file_id': item.file_id,
+                        'text': cleaned_transcription
+                    }
+                
+                # Create updated FileResultItem with output
+                updated_item = FileResultItem(
+                    file_id=item.file_id,
+                    transcription=cleaned_transcription,
+                    segments=item.segments,
+                    stats=item.stats,
+                    metadata=item.metadata,
+                    output=output
+                )
+                processed_items.append(updated_item)
+            except Exception as e:
+                self.logger.error(f"Post-processing failed for item {item.file_id}: {e}")
         
         return BatchData(
             batch_id=batch.batch_id,

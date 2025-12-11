@@ -3,6 +3,7 @@
 import time
 from typing import Dict, List, Any, Tuple, Iterator
 from pathlib import Path
+import logging
 
 import ray
 import numpy as np
@@ -17,6 +18,7 @@ class VADProcessingStage(PipelineStage):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.logger = logging.getLogger("VADProcessingStage")
         self.vad_config = config.get('vad', {})
         self.batch_size = config.get('batch_size', 32)
         self.cache_enabled = self.vad_config.get('cache_enabled', True)
@@ -81,6 +83,7 @@ class VADProcessingStage(PipelineStage):
                  sample_rate=item.sample_rate
              )
         except Exception as e:
+            self.logger.error(f"VAD processing failed for item {item.file_id}: {e}")
             return None
 
     def process(self, batch: BatchData[TensorItem]) -> BatchData[TensorItem]:
@@ -125,7 +128,7 @@ class VADProcessingStage(PipelineStage):
             if self.vad_processor and hasattr(self.vad_processor, 'cache'):
                 self.vad_processor.cache.clear()
         except Exception as e:
-            pass
+            self.logger.error(f"Failed to cleanup VAD resources: {e}")
 
 
 class VADStageAdapter:

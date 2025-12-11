@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import torch
 import torchaudio
 import numpy as np
+import logging
 
 from ..scheduling.pipeline import PipelineStage
 from ..common import BatchData, SourceItem, RawAudioItem, TensorItem, SegmentItem
@@ -161,6 +162,7 @@ class AudioDownloadStage(PipelineStage):
         from ..data.storage import MediaStorageManager
         from ..data.media_indexer import MediaDataLoader
         
+        self.logger = logging.getLogger("AudioDownloadStage")
         self.storage_manager = MediaStorageManager(config['storage'])
         self.data_loader = MediaDataLoader(config['data'])
         
@@ -206,6 +208,7 @@ class AudioDownloadStage(PipelineStage):
                     with open(cached_audio, 'rb') as f:
                         audio_bytes = f.read()
                 except Exception as e:
+                    self.logger.error(f"Failed to read cached audio for {file_id}: {e}")
                     raise
             else:
                 # Download from storage
@@ -214,7 +217,9 @@ class AudioDownloadStage(PipelineStage):
                         tmp_file_path = tmp_file.name
                         success = self.storage_manager.download_audio(oss_path, tmp_file.name)
                         if not success:
-                            raise ValueError(f"Failed to download {oss_path}")
+                            error_msg = f"Failed to download {oss_path}"
+                            self.logger.error(error_msg)
+                            raise ValueError(error_msg)
                     
                     # 在 with 块外读取文件，确保文件已关闭
                     with open(tmp_file_path, 'rb') as f:
@@ -223,13 +228,16 @@ class AudioDownloadStage(PipelineStage):
                     # Cache the downloaded audio
                     self.data_loader.cache_media(file_id, audio_bytes, 'audio')
                     
+                except Exception as e:
+                    self.logger.error(f"Error processing audio download for {file_id} ({oss_path}): {e}")
+                    raise
                 finally:
                     # 清理临时文件
                     if tmp_file_path and os.path.exists(tmp_file_path):
                         try:
                             os.unlink(tmp_file_path)
                         except Exception as e:
-                            pass
+                            self.logger.warning(f"Failed to cleanup temp file {tmp_file_path}: {e}")
 
             # 确保 audio_bytes 是 bytes 类型
             if isinstance(audio_bytes, bytes):
@@ -244,7 +252,9 @@ class AudioDownloadStage(PipelineStage):
                 )
                 processed_items.append(raw_item)
             else:
-                raise ValueError(f"Invalid audio data type for {file_id}: {type(audio_bytes)}")
+                error_msg = f"Invalid audio data type for {file_id}: {type(audio_bytes)}"
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
         
         # Create new batch with downloaded audio
         new_batch = BatchData(
@@ -277,6 +287,7 @@ class AudioDownloadStage(PipelineStage):
                     with open(cached_media, 'rb') as f:
                         file_bytes = f.read()
                 except Exception as e:
+                    self.logger.error(f"Failed to read cached media for {file_id}: {e}")
                     raise
             else:
                 # Download from storage
@@ -285,7 +296,9 @@ class AudioDownloadStage(PipelineStage):
                         tmp_file_path = tmp_file.name
                         success = self.storage_manager.download_audio(oss_path, tmp_file.name)
                         if not success:
-                            raise ValueError(f"Failed to download {oss_path}")
+                            error_msg = f"Failed to download {oss_path}"
+                            self.logger.error(error_msg)
+                            raise ValueError(error_msg)
                     
                     # 在 with 块外读取文件
                     with open(tmp_file_path, 'rb') as f:
@@ -294,13 +307,16 @@ class AudioDownloadStage(PipelineStage):
                     # Cache the downloaded media
                     self.data_loader.cache_media(file_id, file_bytes, 'audio')
                     
+                except Exception as e:
+                    self.logger.error(f"Error processing multimedia download for {file_id} ({oss_path}): {e}")
+                    raise
                 finally:
                     # 清理临时文件
                     if tmp_file_path and os.path.exists(tmp_file_path):
                         try:
                             os.unlink(tmp_file_path)
                         except Exception as e:
-                            pass
+                            self.logger.warning(f"Failed to cleanup temp file {tmp_file_path}: {e}")
             
             # 确保 file_bytes 是 bytes 类型
             if isinstance(file_bytes, bytes):
@@ -314,7 +330,9 @@ class AudioDownloadStage(PipelineStage):
                 media_items.append(media_item)
                 item_mapping[file_id] = item
             else:
-                raise ValueError(f"Invalid media data type for {file_id}: {type(file_bytes)}")
+                error_msg = f"Invalid media data type for {file_id}: {type(file_bytes)}"
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
     
         # Process media items in batch
         audio_data_list = self.batch_processor.process_batch(media_items)
@@ -355,6 +373,7 @@ class AudioPreprocessingStage(PipelineStage):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.logger = logging.getLogger("AudioPreprocessingStage")
         audio_config = AudioConfig(**config.get('audio', {}))
         self.preprocessor = AudioPreprocessor(audio_config)
         
@@ -379,7 +398,7 @@ class AudioPreprocessingStage(PipelineStage):
                 sample_rate=sample_rate
             )
         except Exception as e:
-            # Add logging here
+            self.logger.error(f"Preprocessing failed for item {item.file_id}: {e}")
             return None
 
     def process(self, batch: BatchData[RawAudioItem]) -> BatchData[TensorItem]:
@@ -439,32 +458,37 @@ class AudioFeatureStage(PipelineStage):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.logger = logging.getLogger("AudioFeatureStage")
         # Qwen3-Omni expects raw audio waveform, no feature extraction needed
         
     def _prepare_item(self, item: SegmentItem) -> SegmentItem:
         """Prepare item (add features if needed, or pass through for Qwen3-Omni)"""
-        # For Qwen3-Omni, we might just pass through or ensure format
-        # If we need to add 'feature' field, we would need a new Item type or modify SegmentItem
-        # But per design doc, AudioFeatureStage output is SegmentItem-like but with features.
-        # Ideally we might have a FeatureItem, but for now let's reuse/enrich.
-        
-        # Actually Note.md says AudioFeatureStage output has 'audio_features' etc.
-        # But common.py SegmentItem definition doesn't have 'audio_features'.
-        # For strict typing, we should either update SegmentItem or use dynamic getattr
-        # or stick to what is in common.py.
-        # Assuming we can dynamically add or we update common.py later.
-        # For now, let's assume valid SegmentItem in -> SegmentItem out (maybe with updated metadata?)
-        # Or returns InferenceReadyItem?
-        
-        # NOTE: Refactoring to use functional map implies returning a new Typed Item.
-        # InferenceItem requires 'transcription', so we can't use that yet.
-        # We will return SegmentItem, but perhaps use metadata to store features if needed, 
-        # OR just update common.py to include audio_features in SegmentItem (optional).
-        
-        # For now, let's keep it simple: Just pass through or do minimal updates.
-        # Qwen3-Omni takes raw waveform which SegmentItem already has in 'waveform' field.
-        # So this stage might be a confusing "pass-through" or "verification" stage.
-        return item
+        try:
+            # For Qwen3-Omni, we might just pass through or ensure format
+            # If we need to add 'feature' field, we would need a new Item type or modify SegmentItem
+            # But per design doc, AudioFeatureStage output is SegmentItem-like but with features.
+            # Ideally we might have a FeatureItem, but for now let's reuse/enrich.
+            
+            # Actually Note.md says AudioFeatureStage output has 'audio_features' etc.
+            # But common.py SegmentItem definition doesn't have 'audio_features'.
+            # For strict typing, we should either update SegmentItem or use dynamic getattr
+            # or stick to what is in common.py.
+            # Assuming we can dynamically add or we update common.py later.
+            # For now, let's assume valid SegmentItem in -> SegmentItem out (maybe with updated metadata?)
+            # Or returns InferenceReadyItem?
+            
+            # NOTE: Refactoring to use functional map implies returning a new Typed Item.
+            # InferenceItem requires 'transcription', so we can't use that yet.
+            # We will return SegmentItem, but perhaps use metadata to store features if needed, 
+            # OR just update common.py to include audio_features in SegmentItem (optional).
+            
+            # For now, let's keep it simple: Just pass through or do minimal updates.
+            # Qwen3-Omni takes raw waveform which SegmentItem already has in 'waveform' field.
+            # So this stage might be a confusing "pass-through" or "verification" stage.
+            return item
+        except Exception as e:
+            self.logger.error(f"Feature preparation failed for item {item.file_id}: {e}")
+            return None
 
     def process(self, batch: BatchData[SegmentItem]) -> BatchData[SegmentItem]:
         """Prepare audio data for Qwen3-Omni model"""

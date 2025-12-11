@@ -3,6 +3,7 @@
 import time
 from typing import Dict, List, Any
 from dataclasses import dataclass
+import logging
 
 import ray
 
@@ -22,6 +23,7 @@ class SegmentExpansionStage(PipelineStage):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.logger = logging.getLogger("SegmentExpansionStage")
         self.min_segment_duration = config.get('min_segment_duration', 0.1)  # 最小片段时长(秒)
         self.preserve_order = config.get('preserve_order', True)  # 保持片段顺序
         
@@ -57,37 +59,41 @@ class SegmentExpansionStage(PipelineStage):
     
     def _expand_item(self, item: TensorItem) -> List[SegmentItem]:
         """展开单个TensorItem为多个SegmentItem"""
-        # 从metadata获取VAD segment结果
-        segments_data = item.metadata.get('segments', [])
-        if not segments_data:
-            return []
-        
-        # 过滤并创建SegmentItem列表
-        valid_segments = self._filter_segments(segments_data)
-        segment_items = []
-        
-        for idx, segment_data in enumerate(valid_segments):
-            segment_item = SegmentItem(
-                file_id=item.file_id,
-                parent_file_id=item.file_id,
-                segment_id=segment_data.segment_id,
-                segment_index=idx,
-                start_time=segment_data.start_time,
-                end_time=segment_data.end_time,
-                waveform=segment_data.audio_data,
-                original_duration=segment_data.original_duration,
-                oss_path=item.oss_path,
-                metadata={
-                    **item.metadata,
-                    'sample_rate': segment_data.sample_rate,
-                    'duration': segment_data.duration,
-                    'processing_timestamp': time.time()
-                }
-            )
-            segment_items.append(segment_item)
+        try:
+            # 从metadata获取VAD segment结果
+            segments_data = item.metadata.get('segments', [])
+            if not segments_data:
+                return []
             
-        self.stats['filtered_segments'] += len(segments_data) - len(valid_segments)
-        return segment_items
+            # 过滤并创建SegmentItem列表
+            valid_segments = self._filter_segments(segments_data)
+            segment_items = []
+            
+            for idx, segment_data in enumerate(valid_segments):
+                segment_item = SegmentItem(
+                    file_id=item.file_id,
+                    parent_file_id=item.file_id,
+                    segment_id=segment_data.segment_id,
+                    segment_index=idx,
+                    start_time=segment_data.start_time,
+                    end_time=segment_data.end_time,
+                    waveform=segment_data.audio_data,
+                    original_duration=segment_data.original_duration,
+                    oss_path=item.oss_path,
+                    metadata={
+                        **item.metadata,
+                        'sample_rate': segment_data.sample_rate,
+                        'duration': segment_data.duration,
+                        'processing_timestamp': time.time()
+                    }
+                )
+                segment_items.append(segment_item)
+                
+            self.stats['filtered_segments'] += len(segments_data) - len(valid_segments)
+            return segment_items
+        except Exception as e:
+            self.logger.error(f"Failed to expand item {item.file_id}: {e}")
+            return []
     
     def _filter_segments(self, segments: List[Any]) -> List[Any]:
         """过滤无效的segments"""
@@ -140,6 +146,7 @@ class SegmentAggregationStage(PipelineStage):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.logger = logging.getLogger("SegmentAggregationStage")
         self.sort_by_timestamp = config.get('sort_by_timestamp', True)
         self.include_segment_details = config.get('include_segment_details', True)
         self.calculate_file_stats = config.get('calculate_file_stats', True)
@@ -162,8 +169,11 @@ class SegmentAggregationStage(PipelineStage):
         # 聚合每个文件的结果
         aggregated_items = []
         for file_id, segments in file_groups.items():
-            aggregated_item = self._aggregate_segments(file_id, segments)
-            aggregated_items.append(aggregated_item)
+            try:
+                aggregated_item = self._aggregate_segments(file_id, segments)
+                aggregated_items.append(aggregated_item)
+            except Exception as e:
+                self.logger.error(f"Failed to aggregate segments for file {file_id}: {e}")
         
         # 更新统计信息
         self.stats['processed_batches'] += 1
