@@ -180,12 +180,23 @@ class BatchInferenceStage(PipelineStage):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        inference_config = InferenceConfig(**config.get('inference', {}))
+        self.inference_config = InferenceConfig(**config.get('inference', {}))
         
         # Initialize components
-        self.inference_engine = VLLMInferenceEngine(inference_config)
-        self.model_processor = AudioModelProcessor(inference_config)
+        self._inference_engine = None
+        self.model_processor = AudioModelProcessor(self.inference_config)
         self.prompt_template = config.get('prompt_template', '请将这段语音转换为纯文本。')
+        
+        # For synchronous execution
+        self._sync_loop = None
+        
+    @property
+    def inference_engine(self):
+        """Lazy initialization of inference engine"""
+        if self._inference_engine is None:
+            print(f"Initializing vLLM engine on loop: {asyncio.get_event_loop()}")
+            self._inference_engine = VLLMInferenceEngine(self.inference_config)
+        return self._inference_engine
         
     async def process_async(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
         """Async processing method"""
@@ -233,6 +244,7 @@ class BatchInferenceStage(PipelineStage):
             batch_inputs.append(inputs)
         
         # Batch inference (errors will raise)
+        # Access inference_engine via property to trigger lazy init if needed
         transcriptions = await self.inference_engine.generate_batch_async(batch_inputs)
         
         # Create InferenceItem objects
@@ -263,13 +275,18 @@ class BatchInferenceStage(PipelineStage):
     
 
     def process(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
-        """Sync wrapper for compatibility"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(self.process_async(batch))
-        finally:
-            loop.close()
+        """Sync wrapper for compatibility with persistent loop"""
+        if self._sync_loop is None:
+            self._sync_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._sync_loop)
+            
+        return self._sync_loop.run_until_complete(self.process_async(batch))
+        
+    def cleanup(self):
+        """Cleanup resources"""
+        if self._sync_loop is not None:
+            self._sync_loop.close()
+            self._sync_loop = None
 
 
 class PostProcessingStage(PipelineStage):
