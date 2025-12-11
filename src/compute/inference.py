@@ -166,9 +166,7 @@ class VLLMInferenceEngine:
         async for request_output in self.engine.generate(
             inputs['prompt'], 
             sampling_params, 
-            request_id,
-            multi_modal_data=inputs.get('multi_modal_data', {}),
-            mm_processor_kwargs=inputs.get('mm_processor_kwargs', {})
+            request_id
         ):
             final_output = request_output.outputs[0].text
         

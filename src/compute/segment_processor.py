@@ -94,6 +94,10 @@ class SegmentExpansionStage(PipelineStage):
             if not hasattr(segment, 'audio_data') or segment.audio_data is None:
                 continue
             
+            # 检查音频数据是否为空数组
+            if hasattr(segment.audio_data, '__len__') and len(segment.audio_data) == 0:
+                continue  # 空音频数据，跳过该segment
+            
             valid_segments.append(segment)
         
         # 保持顺序（如果需要）
