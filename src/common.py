@@ -29,7 +29,7 @@ class SourceItem(PipelineItem):
 @dataclass
 class RawAudioItem(SourceItem):
     """State after download: Contains raw bytes."""
-    audio_bytes: bytes
+    audio_bytes: bytes = b''  # Default empty bytes to satisfy dataclass inheritance rules
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
