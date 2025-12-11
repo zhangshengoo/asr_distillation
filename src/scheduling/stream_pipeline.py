@@ -230,6 +230,7 @@ class StreamingPipelineWorker:
                     
                     # 处理批次
                     start_time = time.time()
+                    logger.info(f"Worker {self.worker_id} processing batch {batch.batch_id} with {len(batch.items)} items")
                     try:
                         # 根据Stage类型选择处理方式
                         if self.is_async_stage:
@@ -246,6 +247,8 @@ class StreamingPipelineWorker:
                         result.metadata['processed_at'] = time.time()
                         result.metadata['processing_time'] = time.time() - start_time
                         
+                        logger.info(f"Worker {self.worker_id} finished batch {batch.batch_id}: input={len(batch.items)}, output={len(result.items)}")
+                        
                         # 放入输出队列
                         output_queue.put(result, block=True, timeout=60)
                         
@@ -253,7 +256,9 @@ class StreamingPipelineWorker:
                         self.total_processing_time += time.time() - start_time
                         
                     except Exception as e:
-                        logger.error(f"Worker {self.worker_id} processing error: {e}")
+                        import traceback
+                        logger.error(f"Worker {self.worker_id} processing error in stage '{self.stage_name}': {e}")
+                        logger.error(f"Traceback:\n{traceback.format_exc()}")
                         
                         # 重试逻辑
                         batch.retry_count += 1
@@ -263,7 +268,9 @@ class StreamingPipelineWorker:
                         else:
                             logger.error(f"Batch {batch.batch_id} failed after {self.max_retries} retries")
                             batch.metadata['error'] = str(e)
+                            batch.metadata['error_traceback'] = traceback.format_exc()
                             batch.metadata['failed_worker'] = self.worker_id
+                            batch.metadata['failed_stage'] = self.stage_name
                             dead_letter_queue.put(batch, block=True)
                             
                         self.error_count += 1
@@ -272,7 +279,9 @@ class StreamingPipelineWorker:
                     # 队列为空，继续等待
                     continue
                 except Exception as e:
-                    logger.error(f"Worker {self.worker_id} unexpected error: {e}")
+                    import traceback
+                    logger.error(f"Worker {self.worker_id} unexpected error in stage '{self.stage_name}': {e}")
+                    logger.error(f"Traceback:\n{traceback.format_exc()}")
                     break
             
             # 返回统计信息
@@ -456,7 +465,9 @@ class StreamingPipelineOrchestrator:
                     stats = ray.get(task, timeout=self.pipeline_config.worker_timeout)
                     worker_stats[stage_name].append(stats)
                 except Exception as e:
-                    logger.error(f"Worker task failed: {e}")
+                    import traceback
+                    logger.error(f"Worker task failed in stage '{stage_name}': {e}")
+                    logger.error(f"Stage '{stage_name}' traceback:\n{traceback.format_exc()}")
             
             # 等待生产者完成
             ray.get(producer_task)

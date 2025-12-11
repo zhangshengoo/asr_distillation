@@ -164,8 +164,9 @@ class VLLMInferenceEngine:
         """Internal method for single inference"""
         final_output = None
         
+        # inputs already contains: prompt, multi_modal_data, mm_processor_kwargs
         async for request_output in self.engine.generate(
-            inputs['prompt'], 
+            inputs,  # Pass the full inputs dict with multimodal data
             sampling_params, 
             request_id
         ):
