@@ -12,7 +12,8 @@ import time
 class PipelineItem(ABC):
     """Base class for all items in the pipeline."""
     file_id: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    # Note: metadata has no default here to allow subclasses to add fields without defaults
+    # Subclasses should add: metadata: Dict[str, Any] = field(default_factory=dict) as their last field
     
     @property
     def stage_name(self) -> str:
@@ -24,6 +25,7 @@ class SourceItem(PipelineItem):
     oss_path: str
     format: str = "wav"
     duration: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class RawAudioItem(SourceItem):
@@ -51,7 +53,8 @@ class SegmentItem(PipelineItem):
     waveform: np.ndarray 
     original_duration: float
     # Inherited source metadata
-    oss_path: str = ""
+    oss_path: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class InferenceItem(SegmentItem):
@@ -66,6 +69,7 @@ class FileResultItem(PipelineItem):
     transcription: str  # Aggregated text
     segments: List[Dict[str, Any]] # Detailed breakdown
     stats: Dict[str, Any]
+    metadata: Dict[str, Any] = field(default_factory=dict)
     output: Optional[Dict[str, Any]] = None # Formatted output for writer
 
 # --- 2. The Container (The "Batch") ---

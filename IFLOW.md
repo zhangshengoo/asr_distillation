@@ -5,6 +5,12 @@
 这是一个基于大型多模态模型的ASR蒸馏框架，专为处理大规模音频和视频数据设计。框架采用分布式流水线架构，使用Producer-Consumer模式实现高效的媒体数据处理和转录。通过异构计算架构（CPU预处理+GPU推理）和零拷贝传输，最大化H200等高性能计算资源的利用率。框架支持多媒体处理，能够从视频文件中提取音频并进行ASR处理，同时集成了Silero VAD语音活动检测工具，提供更精确的语音识别能力。
 
 ### 最新特性
+- **流式处理管道**: 新增`stream_pipeline.py`，支持千万级数据处理的流式管道
+- **流式处理主程序**: 新增`main_stream.py`，支持千万级数据的流式处理
+- **流式处理配置**: 新增流式处理相关配置选项
+- **队列背压控制**: 实现队列背压控制，避免内存溢出
+- **容错机制**: 实现检查点、重试、死信队列等容错机制
+- **动态调度**: 支持根据负载自动调整
 - **VAD处理阶段**: 新增独立的VAD处理流水线阶段，支持语音活动检测和音频切分
 - **音频片段处理**: 新增SegmentExpansionStage和SegmentAggregationStage，实现音频片段的展开和聚合
 - **增强型运行脚本**: 提供更便捷的命令行操作和参数配置
@@ -13,6 +19,18 @@
 - **WebDataset支持**: 优化大规模数据集处理性能
 - **Parquet索引**: 提高大规模数据索引效率
 - **批量媒体处理器**: 高效的批量媒体处理，支持并行处理和缓存优化
+- **序列化测试**: 新增Ray actor序列化问题测试，提高系统稳定性
+- **多媒体存储管理器**: 统一的音频和视频文件存储管理接口
+- **Ray初始化诊断测试**: 新增Ray初始化问题诊断和监控系统交互测试
+- **问题修复记录**: 新增fixCode.md记录已修复的Ray分布式处理和数据处理问题
+- **监控系统优化**: 解决了MonitoringSystem启动导致Ray初始化卡住的问题
+- **缓存方法统一**: 统一音频/视频缓存方法，支持多媒体类型
+- **配置扩展**: 扩展AudioConfig支持更多音频特征提取参数
+- **Ray Worker参数修复**: 修复Ray Worker资源分配参数问题
+- **多阶段流水线**: 支持任意数量的顺序处理阶段，每个阶段可独立配置Worker数量
+- **批处理推理优化**: 优化GPU利用率，支持连续批处理
+- **Qwen3-Omni集成**: 集成最新的Qwen3-Omni多模态模型
+- **阶段化Worker配置**: 支持为每个阶段独立配置Worker数量
 
 ### 核心技术栈
 - **Python 3.9+**
@@ -29,47 +47,54 @@
 - **Pydantic**: 数据验证和配置管理
 - **Silero VAD**: 语音活动检测工具
 - **Parquet**: 大规模数据索引和存储格式
+- **Qwen3-Omni**: 最新的多模态模型，支持音频、视频、图像处理
 
 ## 项目结构
 
 ```
 asr_distillation/
 ├── main.py                    # 主入口文件，CLI命令定义
+├── main_stream.py             # 流式处理主程序，支持千万级数据处理
 ├── config.yaml               # 配置文件模板
 ├── pyproject.toml            # 项目依赖和配置
 ├── requirements.txt          # Python依赖列表
 ├── README.md                 # 项目说明文档
 ├── Design.md                 # 架构设计文档
 ├── IFLOW.md                  # iFlow CLI上下文文档
+├── Note.md                   # 问题记录和开发笔记
+├── fixCode.md                # Bug修复记录
 ├── src/                      # 源代码目录
+│   ├── __init__.py
+│   ├── common.py             # 公共模块，包含DataBatch等共享类
 │   ├── compute/              # 计算层
 │   │   ├── __init__.py
 │   │   ├── audio_processor.py    # CPU音频预处理
 │   │   ├── inference.py          # GPU推理引擎
+│   │   ├── segment_processor.py  # 音频片段处理
 │   │   ├── vad_stage.py          # VAD处理阶段
 │   │   ├── vad.py                # VAD处理器核心实现
-│   │   ├── segment_processor.py  # 音频片段处理
 │   │   └── media/                # 多媒体处理模块
 │   │       ├── __init__.py
 │   │       ├── media_detector.py     # 媒体格式检测器
 │   │       ├── media_extractor.py    # 媒体提取器
 │   │       └── batch_media_processor.py # 批量媒体处理器
+│   ├── config/               # 配置管理
+│   │   └── manager.py            # 配置管理器
 │   ├── data/                 # 数据层
 │   │   ├── __init__.py
 │   │   ├── audio_indexer.py      # 音频索引管理
 │   │   ├── media_indexer.py      # 多媒体索引管理
-│   │   └── storage.py            # OSS存储接口
-│   ├── scheduling/           # 调度层
-│   │   ├── __init__.py
-│   │   └── pipeline.py           # Ray分布式流水线
-│   ├── storage/              # 存储层
-│   │   ├── __init__.py
-│   │   └── result_writer.py      # 异步结果写入
+│   │   └── storage.py            # OSS存储接口(已更新为多媒体存储管理器)
 │   ├── monitoring/           # 监控层
 │   │   ├── __init__.py
 │   │   └── system.py             # Prometheus监控
-│   └── config/               # 配置管理
-│       └── manager.py            # 配置管理器
+│   ├── scheduling/           # 调度层
+│   │   ├── __init__.py
+│   │   ├── pipeline.py           # Ray分布式流水线
+│   │   └── stream_pipeline.py    # 流式分布式流水线，支持千万级数据处理
+│   └── storage/              # 存储层
+│       ├── __init__.py
+│       └── result_writer.py      # 异步结果写入
 ├── examples/                 # 示例代码
 │   ├── model_examples/       # 模型示例代码
 │   │   └── qwen3_omni.py     # Qwen3-Omni模型示例
@@ -90,11 +115,18 @@ asr_distillation/
 │   ├── data/                # 数据层测试
 │   │   └── test_audio_indexer.py
 │   ├── scheduling/          # 调度层测试
-│   │   └── test_pipeline.py
+│   │   ├── test_pipeline.py
+│   │   ├── test_serialization.py  # 序列化问题测试
+│   │   └── test_ray_init.py      # Ray初始化诊断测试
 │   ├── conftest.py          # pytest配置
 │   ├── run_tests.py         # 测试运行脚本
+│   ├── config_test.yaml     # 测试配置文件
 │   └── README.md            # 测试说明文档
-├── __pycache__/             # Python缓存目录
+├── cache/                   # 缓存目录
+│   └── vad/                 # VAD缓存目录
+├── checkpoints/             # 检查点目录
+├── data/                    # 数据目录
+├── logs/                    # 日志目录
 └── .git/                    # Git版本控制
 ```
 
@@ -103,7 +135,10 @@ asr_distillation/
 ### 1. 数据层 (src/data/)
 - **AudioIndexer**: 支持Parquet格式的大规模音频索引，优化小文件IO
 - **MediaIndexer**: 多媒体文件索引管理，支持音频和视频文件的统一索引
-- **AudioStorageManager**: 阿里云OSS存储接口，支持批量上传下载
+- **MediaStorageManager**: 阿里云OSS存储接口，支持批量上传下载（已更新为多媒体存储管理器）
+  - 支持音频和视频文件的统一管理
+  - 提供向后兼容的AudioStorageManager别名
+  - 增强的媒体类型检测和元数据获取
 - **MediaCache**: 本地NVMe SSD缓存管理，支持音频和视频文件缓存，减少存储访问延迟
 - **WebDatasetBuilder**: 构建WebDataset分片，优化大规模数据集处理
 - **MediaDataLoader**: 统一的多媒体数据加载接口，提供索引和缓存管理
@@ -151,6 +186,13 @@ asr_distillation/
   - 基于Ray Actor的Worker节点管理
   - 零拷贝对象传输优化
   - 轮询负载均衡策略
+  - 序列化问题处理和测试支持
+- **StreamingPipelineOrchestrator**: 流式Pipeline编排器，支持千万级数据处理
+  - 流式处理：生产者-消费者模式，stage间流水线并行
+  - 内存管理：队列背压控制，避免OOM
+  - 容错机制：检查点、重试、死信队列
+  - 动态调度：根据负载自动调整
+  - 监控集成：实时进度和性能指标
 - **PipelineOrchestrator**: 高级任务调度和管理
   - 多阶段流水线配置和编排
   - CPU/GPU异构资源调度
@@ -163,6 +205,10 @@ asr_distillation/
   - **容错机制**: Worker失败自动重试，错误信息传播和记录
   - **资源隔离**: 基于Ray的资源调度确保CPU/GPU资源隔离
   - **监控集成**: 实时统计各阶段处理时间和吞吐量
+  - **序列化安全**: 通过测试确保Ray actor序列化问题得到妥善处理
+  - **Ray初始化优化**: 通过诊断测试确保Ray与监控系统的兼容性
+  - **流式处理**: 支持千万级数据的流式处理，避免一次性加载所有数据
+  - **队列背压**: 实现队列背压控制，防止内存溢出
 
 ### 4. 存储层 (src/storage/)
 - **AsyncResultWriter**: 异步结果写入，支持批量聚合
@@ -175,9 +221,11 @@ asr_distillation/
   - GPU利用率监控
   - KV Cache使用率
   - 系统资源监控
+  - Ray集群状态监控
 - **FaultToleranceManager**: 容错管理和自动恢复
 - **MetricsCollector**: Prometheus指标收集器
 - **MonitoringConfig**: 监控配置管理
+- **Ray初始化兼容性**: 确保监控系统与Ray初始化的兼容性
 
 ### 6. 配置管理 (src/config/)
 - **ConfigManager**: 基于OmegaConf的配置系统
@@ -185,12 +233,12 @@ asr_distillation/
   - 环境变量覆盖
   - 配置模板生成
 - **DataConfig**: 数据层配置
-- **PipelineConfig**: 流水线配置
-- **AudioConfig**: 音频处理配置
+- **PipelineConfig**: 流水线配置，新增流式处理配置选项
 - **MediaConfig**: 多媒体处理配置
 - **VADConfig**: VAD处理配置
+- **AudioConfig**: 音频处理配置
 - **InferenceConfig**: 推理配置
-- **WriteConfig**: 写入配置
+- **WriterConfig**: 写入配置
 - **MonitoringConfig**: 监控配置
 
 ## 流水线架构
@@ -216,13 +264,18 @@ asr_distillation/
 ### 1. 创建配置文件
 ```bash
 python main.py create-config --output my_config.yaml
+# 或使用流式处理
+python main_stream.py create-config --output my_config.yaml
 # 或使用脚本
 ./scripts/run.sh -a create-config -o my_config.yaml
 ```
 
 ### 2. 运行pipeline
 ```bash
+# 标准处理
 python main.py run --config my_config.yaml
+# 流式处理（推荐用于大规模数据）
+python main_stream.py run --config my_config.yaml
 # 或使用脚本
 ./scripts/run.sh -c my_config.yaml
 ```
@@ -230,18 +283,27 @@ python main.py run --config my_config.yaml
 ### 3. 限制处理批次
 ```bash
 python main.py run --config my_config.yaml --max-batches 100
+# 流式处理
+python main_stream.py run --config my_config.yaml --max-batches 100
 # 或使用脚本
 ./scripts/run.sh -c my_config.yaml -b 100
 ```
 
-### 4. 指定日志级别
+### 4. 查看流式处理状态
+```bash
+python main_stream.py status --checkpoint-dir ./checkpoints
+```
+
+### 5. 指定日志级别
 ```bash
 python main.py run --config my_config.yaml --log-level DEBUG
+# 流式处理
+python main_stream.py run --config my_config.yaml --log-level DEBUG
 # 或使用脚本
 ./scripts/run.sh -c my_config.yaml -l DEBUG
 ```
 
-### 5. 使用增强型运行脚本
+### 6. 使用增强型运行脚本
 ```bash
 # 显示帮助信息
 ./scripts/run.sh --help
@@ -256,7 +318,7 @@ python main.py run --config my_config.yaml --log-level DEBUG
 ./scripts/run.sh -a create-config -o new_config.yaml
 ```
 
-### 6. 运行测试
+### 7. 运行测试
 ```bash
 # 使用测试运行脚本
 python tests/run_tests.py
@@ -268,6 +330,15 @@ pytest tests/
 pytest tests/compute/test_audio_processor.py
 pytest tests/compute/test_vad.py
 pytest tests/compute/test_batch_media_processor.py
+
+# 运行序列化测试
+pytest tests/scheduling/test_serialization.py
+
+# 运行Ray初始化诊断测试
+pytest tests/scheduling/test_ray_init.py -v
+
+# 运行特定Ray初始化测试
+python tests/scheduling/test_ray_init.py
 ```
 
 ## 关键配置项
@@ -284,6 +355,7 @@ pytest tests/compute/test_batch_media_processor.py
 - `data.storage.access_key_secret`: OSS访问密钥Secret
 - `data.storage.audio_prefix`: 音频文件前缀
 - `data.storage.result_prefix`: 结果输出前缀
+- `data.storage.video_prefix`: 视频文件前缀（新增）
 
 ### 流水线配置
 - `pipeline.num_cpu_workers`: CPU工作节点数
@@ -294,6 +366,21 @@ pytest tests/compute/test_batch_media_processor.py
 - `pipeline.checkpoint_interval`: 检查点间隔
 - `pipeline.cpu_worker_resources`: CPU工作节点资源配置
 - `pipeline.gpu_worker_resources`: GPU工作节点资源配置
+- `pipeline.stage_workers`: 各阶段的Worker数量配置
+  - `audio_download`: 音频下载阶段Worker数量 (默认8)
+  - `audio_preprocessing`: 音频预处理阶段Worker数量 (默认6)
+  - `vad_processing`: VAD处理阶段Worker数量 (默认4)
+  - `segment_expansion`: 片段展开阶段Worker数量 (默认4)
+  - `feature_extraction`: 特征提取阶段Worker数量 (默认6)
+  - `batch_inference`: 批量推理阶段Worker数量 (默认1)
+  - `segment_aggregation`: 片段聚合阶段Worker数量 (默认2)
+  - `post_processing`: 后处理阶段Worker数量 (默认2)
+- `pipeline.queue_max_size`: 队列最大大小，用于背压控制 (默认100)
+- `pipeline.worker_timeout`: Worker超时时间（秒） (默认300)
+- `pipeline.max_retries`: 最大重试次数 (默认3)
+- `pipeline.checkpoint_dir`: 检查点目录 (默认"./checkpoints")
+- `pipeline.enable_streaming`: 启用流式处理 (默认True)
+- `pipeline.prefetch_batches`: 预取批次数 (默认10)
 
 ### 音频配置
 - `audio.target_sample_rate`: 目标采样率(16000)
@@ -407,6 +494,8 @@ pytest tests/compute/test_batch_media_processor.py
 - 开发依赖包含完整的测试工具链
 - 使用 `tests/run_tests.py` 运行完整测试套件
 - 支持测试覆盖率分析
+- 新增序列化测试，确保Ray actor序列化问题得到妥善处理
+- 新增Ray初始化诊断测试，确保监控系统与Ray的兼容性
 
 ### 添加新模型
 1. 在 `examples/model_examples/` 创建新模型文件
@@ -430,6 +519,18 @@ pytest tests/compute/test_batch_media_processor.py
 - 在模型类中定义DEFAULT_CONFIG
 - 支持用户配置覆盖默认配置
 - 提供详细的配置文档
+
+### Ray Actor序列化最佳实践
+- 避免在actor初始化时创建文件对象或其他不可序列化的资源
+- 使用延迟初始化模式，在需要时创建资源
+- 确保所有配置和数据都可以序列化
+- 使用`tests/scheduling/test_serialization.py`验证actor序列化
+
+### Ray初始化与监控系统交互最佳实践
+- 建议先初始化Ray再启动监控系统，避免潜在的冲突
+- 如果需要先启动监控系统，确保等待足够时间使系统稳定
+- 使用`tests/scheduling/test_ray_init.py`诊断Ray初始化问题
+- 在生产环境中，监控系统应配置独立的端口避免冲突
 
 ## 性能优化建议
 
@@ -457,6 +558,24 @@ pytest tests/compute/test_batch_media_processor.py
 - 跟踪处理吞吐量和错误率
 - 监控各阶段延迟和吞吐量
 
+### 5. 序列化优化
+- 确保Ray actor可以正确序列化
+- 避免在actor中存储不可序列化的对象
+- 使用延迟初始化处理文件句柄等资源
+- 定期运行序列化测试验证系统稳定性
+
+### 6. Ray初始化优化
+- 确保监控系统与Ray初始化的兼容性
+- 在生产环境中使用独立的监控端口
+- 定期运行Ray初始化诊断测试
+- 监控系统启动后等待足够时间再初始化Ray
+
+### 7. 流式处理优化
+- 合理设置队列大小（`queue_max_size`）以平衡内存使用和处理效率
+- 调整`prefetch_batches`参数以优化预取策略
+- 设置适当的`worker_timeout`以处理长时间运行的任务
+- 使用死信队列处理无法处理的错误项目
+
 ## 故障排除
 
 ### 常见问题
@@ -467,6 +586,22 @@ pytest tests/compute/test_batch_media_processor.py
 5. **Ray集群问题**: 检查网络配置和端口占用
 6. **Qwen3-Omni模型加载失败**: 确保设置了正确的环境变量和依赖
 7. **VAD处理失败**: 检查VAD模型文件和缓存目录权限
+8. **序列化错误**: 检查Ray actor中是否包含不可序列化的对象，参考`tests/scheduling/test_serialization.py`
+9. **Ray初始化卡住**: 检查监控系统是否在Ray之前启动，参考`tests/scheduling/test_ray_init.py`
+10. **Prometheus端口冲突**: 确保监控系统使用独立端口，避免与其他服务冲突
+11. **Ray装饰器误用**: 确保只有真正的Actor类使用@ray.remote装饰器
+12. **Ray Worker参数错误**: 使用`num_cpus`而非`cpu`参数配置CPU资源
+13. **Logger序列化问题**: 避免在Ray Worker间传递Logger对象
+14. **ONNX模型会话序列化问题**: 在每个Worker中独立加载ONNX模型
+15. **缓存方法命名不一致**: 使用统一的缓存方法命名规范
+16. **Qwen3-Omni环境变量问题**: 确保设置了VLLM_USE_V1=0, VLLM_WORKER_MULTIPROC_METHOD=spawn, VLLM_LOGGING_LEVEL=ERROR
+17. **批处理推理问题**: 检查BatchInferenceStage配置和资源分配
+18. **多阶段流水线问题**: 检查PipelineOrchestrator配置和阶段间数据传输
+19. **音频片段处理失败**: 检查SegmentExpansionStage和SegmentAggregationStage的配置
+20. **Qwen3-Omni多模态输入问题**: 确保音频数据格式符合模型要求
+21. **流式处理内存溢出**: 降低队列大小（`queue_max_size`）或增加背压控制
+22. **流式处理进度停滞**: 检查阶段间的数据传输和Worker状态
+23. **检查点恢复失败**: 验证检查点文件的完整性和格式
 
 ### 日志位置
 - 应用日志: `logs/asr_distillation_YYYY-MM-DD.log`
@@ -490,6 +625,29 @@ ray status
 
 # 使用运行脚本调试
 ./scripts/run.sh -l DEBUG -b 10
+
+# 运行序列化测试
+pytest tests/scheduling/test_serialization.py -v
+
+# 运行Ray初始化诊断测试
+pytest tests/scheduling/test_ray_init.py -v
+
+# 直接运行Ray初始化诊断
+python tests/scheduling/test_ray_init.py
+
+# 检查Qwen3-Omni环境变量
+echo $VLLM_USE_V1
+echo $VLLM_WORKER_MULTIPROC_METHOD
+echo $VLLM_LOGGING_LEVEL
+
+# 运行特定的VAD测试
+pytest tests/compute/test_vad.py -v
+
+# 运行音频处理器测试
+pytest tests/compute/test_audio_processor.py -v
+
+# 查看流式处理状态
+python main_stream.py status --checkpoint-dir ./checkpoints
 ```
 
 ## 扩展性
@@ -538,6 +696,22 @@ ray status
 - 配置验证和模板
 - 热更新支持
 
+### 5. 序列化安全
+- 确保Ray actor可以正确序列化
+- 延迟初始化不可序列化的资源
+- 定期测试验证序列化安全性
+
+### 6. 系统兼容性
+- 确保各组件间的兼容性
+- 监控系统与Ray的协调启动
+- 避免资源冲突和端口占用
+
+### 7. 流式处理设计
+- 流式数据处理，避免一次性加载所有数据
+- 队列背压控制，防止内存溢出
+- 检查点和恢复机制，支持断点续传
+- 动态资源调度，根据负载自动调整
+
 ## 部署建议
 
 ### 1. 硬件配置
@@ -572,6 +746,24 @@ ray status
    - `VLLM_WORKER_MULTIPROC_METHOD=spawn`
    - `VLLM_LOGGING_LEVEL=ERROR`
    - `CUDA_VISIBLE_DEVICES=0`
+9. 注意Ray actor序列化问题，避免在actor中存储不可序列化的对象
+10. 使用`tests/scheduling/test_serialization.py`定期验证系统序列化安全性
+11. 注意Ray初始化与监控系统的交互，避免潜在的冲突
+12. 使用`tests/scheduling/test_ray_init.py`诊断Ray初始化问题
+13. 确保监控系统使用独立端口，避免与其他服务冲突
+14. 参考fixCode.md了解已修复的问题和解决方案
+15. 注意监控系统启动顺序，建议先初始化Ray再启动监控系统
+16. 缓存方法已统一，使用`get_cached_media`和`cache_media`方法
+17. Ray Worker参数应使用`num_cpus`而非`cpu`参数
+18. 确保Qwen3-Omni模型配置正确，特别是limit_mm_per_prompt参数
+19. 批处理推理阶段需要特别注意内存管理和资源分配
+20. VAD阶段的缓存配置可以显著影响处理性能
+21. 多媒体处理阶段需要配置合适的FFmpeg参数和质量设置
+22. 音频片段处理阶段需要合理设置时间戳和合并策略
+23. 对于大规模数据处理，建议使用流式处理模式
+24. 合理配置队列背压参数以防止内存溢出
+25. 使用阶段化Worker配置以优化资源利用率
+26. 定期检查和清理检查点文件以释放存储空间
 
 ## 项目依赖
 
@@ -594,6 +786,9 @@ ray status
 - loguru>=0.7.0
 - omegaconf>=2.3.0
 - ffmpeg-python>=0.2.0
+- silero-vad>=1.0.0
+- transformers>=4.36.0
+- accelerate>=0.25.0
 
 ### 开发依赖
 - pytest>=7.4.0
@@ -610,6 +805,7 @@ ray status
 - 支持OSS标准端点和自定义端点
 - 自动重试和错误处理
 - 优化的批量上传下载操作
+- 支持音频和视频文件的统一管理
 
 ### 配置示例
 ```yaml
@@ -621,6 +817,7 @@ data:
     access_key_id: "your-oss-access-key-id"
     access_key_secret: "your-oss-access-key-secret"
     audio_prefix: "audio/"
+    video_prefix: "video/"  # 新增视频文件前缀
     result_prefix: "results/"
 ```
 
@@ -646,12 +843,16 @@ pip install -r requirements.txt
 
 # 创建配置文件
 python main.py create-config --output config.yaml
+# 或使用流式处理配置
+python main_stream.py create-config --output config.yaml
 
 # 编辑配置文件
 vim config.yaml
 
-# 运行pipeline
+# 运行pipeline（小规模数据）
 python main.py run --config config.yaml
+# 运行pipeline（大规模数据，推荐）
+python main_stream.py run --config config.yaml
 ```
 
 ### 使用增强型运行脚本
@@ -685,13 +886,22 @@ pytest tests/
 pytest tests/compute/test_audio_processor.py
 pytest tests/compute/test_vad.py
 pytest tests/data/test_audio_indexer.py
+
+# 运行序列化测试
+pytest tests/scheduling/test_serialization.py -v
+
+# 运行Ray初始化诊断测试
+pytest tests/scheduling/test_ray_init.py -v
 ```
 
 ### 项目结构说明
 - `main.py`: 主入口文件，定义CLI命令
+- `main_stream.py`: 流式处理主程序，支持千万级数据处理
 - `config.yaml`: 配置文件模板
 - `pyproject.toml`: 项目元数据和依赖配置
 - `requirements.txt`: Python依赖列表
+- `Note.md`: 问题记录和开发笔记
+- `fixCode.md`: Bug修复记录
 - `src/`: 源代码目录
   - `compute/`: 计算层，包含音频处理和推理
   - `data/`: 数据层，包含索引和存储
@@ -715,6 +925,11 @@ pytest tests/data/test_audio_indexer.py
 - 主要依赖版本见pyproject.toml
 
 ### 新增功能
+- **流式处理管道**: 新增`stream_pipeline.py`，支持千万级数据处理的流式管道
+- **流式处理主程序**: 新增`main_stream.py`，支持千万级数据的流式处理
+- **队列背压控制**: 实现队列背压控制，避免内存溢出
+- **容错机制**: 实现检查点、重试、死信队列等容错机制
+- **动态调度**: 支持根据负载自动调整
 - **VAD处理阶段**: 集成Silero VAD语音活动检测，支持音频切分
 - **音频片段处理**: 新增SegmentExpansionStage和SegmentAggregationStage
 - **多媒体索引器**: 支持音频和视频文件的统一索引管理
@@ -724,3 +939,18 @@ pytest tests/data/test_audio_indexer.py
 - **批量媒体处理器**: 高效的批量媒体处理，支持并行处理和缓存优化
 - **完整测试套件**: 覆盖所有核心组件的单元测试
 - **测试运行脚本**: 提供交互式测试运行界面
+- **序列化测试**: 新增Ray actor序列化问题测试，提高系统稳定性
+- **多媒体存储管理器**: 统一的音频和视频文件存储管理接口
+- **Ray初始化诊断测试**: 新增Ray初始化问题诊断和监控系统交互测试
+- **问题记录文档**: 新增Note.md记录开发过程中的问题和解决方案
+- **Bug修复记录**: 新增fixCode.md记录已修复的Ray分布式处理和数据处理问题
+- **监控系统优化**: 解决了MonitoringSystem启动导致Ray初始化卡住的问题
+- **缓存方法统一**: 统一音频/视频缓存方法，支持多媒体类型
+- **配置扩展**: 扩展AudioConfig支持更多音频特征提取参数
+- **Ray Worker参数修复**: 修复Ray Worker资源分配参数问题
+- **多媒体处理**: 新增对多种音视频格式的支持
+- **Qwen3-Omni集成**: 集成最新的Qwen3-Omni多模态模型
+- **批处理推理优化**: 优化GPU利用率，支持连续批处理
+- **多阶段流水线**: 支持任意数量的顺序处理阶段
+- **Segment处理**: 音频片段的展开和聚合处理
+- **阶段化Worker配置**: 支持为每个阶段独立配置Worker数量
