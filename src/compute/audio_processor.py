@@ -193,12 +193,13 @@ class AudioDownloadStage(PipelineStage):
         processed_items = []
         
         for item in batch.items:
-            file_id = item['file_id']
-            oss_path = item['oss_path']
+            file_id = item.file_id
+            oss_path = item.oss_path
             audio_bytes = None  # 初始化为 None
             tmp_file_path = None  # 追踪临时文件路径
             
             # Check cache first
+            # item is SourceItem, dot notation required
             cached_audio = self.data_loader.get_cached_media(file_id, 'audio')
             if cached_audio and cached_audio.exists():
                 try:
@@ -232,11 +233,18 @@ class AudioDownloadStage(PipelineStage):
 
             # 确保 audio_bytes 是 bytes 类型
             if isinstance(audio_bytes, bytes):
-                item['audio_bytes'] = audio_bytes
+                # Create proper RawAudioItem instead of modifying dict
+                raw_item = RawAudioItem(
+                    file_id=item.file_id,
+                    oss_path=item.oss_path,
+                    format=item.format,
+                    duration=item.duration,
+                    metadata=item.metadata,
+                    audio_bytes=audio_bytes
+                )
+                processed_items.append(raw_item)
             else:
                 raise ValueError(f"Invalid audio data type for {file_id}: {type(audio_bytes)}")
-                
-            processed_items.append(item)
         
         # Create new batch with downloaded audio
         new_batch = BatchData(
