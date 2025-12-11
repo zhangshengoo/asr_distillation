@@ -661,13 +661,17 @@ class StreamingPipelineOrchestrator:
             while True:
                 try:
                     batch = result_queue.get(block=True, timeout=10)
+                    # 过滤掉PipelineSignal，只收集BatchData
+                    if isinstance(batch, PipelineSignal):
+                        logger.debug(f"[PIPELINE] Received end signal in results queue: {batch}")
+                        break
                     if batch is None:
                         break
                     results.append(batch)
                 except Empty:
                     break
         
-        logger.info(f"Collected {len(results)} result batches")
+        logger.info(f"[PIPELINE] ✅ Collected {len(results)} result batches")
         return results
     
     def _compute_stats(self,
