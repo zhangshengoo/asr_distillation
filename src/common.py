@@ -25,12 +25,12 @@ class SourceItem(PipelineItem):
     oss_path: str
     format: str = "wav"
     duration: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class RawAudioItem(SourceItem):
     """State after download: Contains raw bytes."""
     audio_bytes: bytes
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class TensorItem(SourceItem):
@@ -38,6 +38,7 @@ class TensorItem(SourceItem):
     # Using np.ndarray for Ray Zero-Copy efficiency
     waveform: np.ndarray 
     sample_rate: int
+    metadata: Dict[str, Any] = field(default_factory=dict)
     # Note: audio_bytes is DROPPED here to save memory
 
 @dataclass
@@ -62,6 +63,7 @@ class InferenceItem(SegmentItem):
     transcription: str
     confidence: float
     inference_timestamp: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class FileResultItem(PipelineItem):
