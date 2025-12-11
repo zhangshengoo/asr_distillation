@@ -27,6 +27,21 @@ from src.config.manager import PipelineConfig
 from src.common import BatchData, SourceItem
 
 
+# Pipeline控制信号
+END_OF_STREAM = "END_OF_STREAM"
+
+@dataclass
+class PipelineSignal:
+    """Pipeline控制信号 - 用于明确的流程控制，替代None"""
+    signal_type: str  # END_OF_STREAM, SHUTDOWN, PAUSE
+    source: str  # 发送者标识 (producer, worker_id)
+    target_worker_count: int = 1  # 下游需要接收的worker数量
+    timestamp: float = field(default_factory=time.time)
+    
+    def __repr__(self) -> str:
+        return f"PipelineSignal({self.signal_type}, from={self.source}, targets={self.target_worker_count})"
+
+
 class PipelineStage(ABC):
     """Abstract base class for pipeline stages"""
     
@@ -103,18 +118,26 @@ class StreamingDataProducer:
                 df = self.data_loader.create_index(media_files)
         return df.to_dict('records')
     
-    def stream_batches(self, output_queue: Queue, max_batches: Optional[int] = None) -> None:
-        """流式产生数据批次到队列"""
+    def stream_batches(self, output_queue: Queue, max_batches: Optional[int] = None,
+                       num_downstream_workers: int = 1) -> None:
+        """流式产生数据批次到队列
+        
+        Args:
+            output_queue: 输出队列
+            max_batches: 最大批次数（用于测试）
+            num_downstream_workers: 下游stage的worker数量，用于发送正确数量的结束信号
+        """
         try:
             audio_records = self.load_index()
-            logger.info(f"Total records in index: {len(audio_records)}")
+            logger.info(f"[PRODUCER] Total records in index: {len(audio_records)}")
             
             # 过滤已处理的文件
             remaining_records = [
                 record for record in audio_records 
                 if record['file_id'] not in self.processed_file_ids
             ]
-            logger.info(f"Remaining records to process: {len(remaining_records)}")
+            logger.info(f"[PRODUCER] Remaining records to process: {len(remaining_records)}")
+            logger.info(f"[PRODUCER] Will send {num_downstream_workers} END_OF_STREAM signals when done")
             
             batch_count = 0
             checkpoint_interval = 100  # 每100个batch保存一次检查点
@@ -143,7 +166,7 @@ class StreamingDataProducer:
                     metadata={'stage': 'producer', 'batch_index': self.total_produced}
                 )
                 
-                logger.debug(f"[PRODUCER] Created batch '{batch.batch_id}' with {len(items)} SourceItems")
+                logger.info(f"[PRODUCER] 📤 Created batch '{batch.batch_id}' with {len(items)} SourceItems")
                 
                 # 将batch放入队列（会阻塞直到队列有空间）
                 try:
@@ -155,23 +178,39 @@ class StreamingDataProducer:
                     # 定期保存检查点
                     if batch_count % checkpoint_interval == 0:
                         self._save_checkpoint()
-                        logger.info(f"Producer checkpoint saved: {batch_count} batches produced")
+                        logger.info(f"[PRODUCER] Checkpoint saved: {batch_count} batches produced")
                     
                 except Full:
-                    logger.warning("Output queue full, retrying...")
+                    logger.warning("[PRODUCER] Output queue full, retrying...")
                     time.sleep(1)
             
-            # 发送结束信号
-            output_queue.put(None, block=True)
+            # 发送多个结束信号（每个下游worker一个）
+            for i in range(num_downstream_workers):
+                end_signal = PipelineSignal(
+                    signal_type=END_OF_STREAM,
+                    source="producer",
+                    target_worker_count=num_downstream_workers
+                )
+                output_queue.put(end_signal, block=True)
+                logger.info(f"[PRODUCER] 🔔 Sent END_OF_STREAM signal {i+1}/{num_downstream_workers}")
             
             # 最终保存检查点
             self._save_checkpoint()
             
-            logger.info(f"Producer completed: {batch_count} batches produced")
+            logger.info(f"[PRODUCER] ✅ Completed: {batch_count} batches produced, {num_downstream_workers} end signals sent")
             
         except Exception as e:
-            logger.error(f"Error in streaming producer: {e}")
-            output_queue.put(None, block=True)  # 发送结束信号
+            import traceback
+            logger.error(f"[PRODUCER] ❌ Error: {e}")
+            logger.error(f"[PRODUCER] Traceback:\n{traceback.format_exc()}")
+            # 发送结束信号以避免下游worker无限等待
+            for i in range(num_downstream_workers):
+                end_signal = PipelineSignal(
+                    signal_type=END_OF_STREAM,
+                    source="producer_error",
+                    target_worker_count=num_downstream_workers
+                )
+                output_queue.put(end_signal, block=True)
             raise
     
     def mark_batch_processed(self, file_ids: List[str]) -> None:
@@ -219,9 +258,17 @@ class StreamingPipelineWorker:
     def process_stream(self,
                       input_queue: Queue,
                       output_queue: Queue,
-                      dead_letter_queue: Queue) -> Dict[str, Any]:
-        """从输入队列流式处理数据"""
-        logger.info(f"Worker {self.worker_id} started processing stream")
+                      dead_letter_queue: Queue,
+                      num_downstream_workers: int = 1) -> Dict[str, Any]:
+        """从输入队列流式处理数据
+        
+        Args:
+            input_queue: 输入队列
+            output_queue: 输出队列
+            dead_letter_queue: 死信队列
+            num_downstream_workers: 下游stage的worker数量，用于发送正确数量的结束信号
+        """
+        logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 🚀 Started, downstream_workers={num_downstream_workers}")
         
         try:
             while True:
@@ -229,10 +276,24 @@ class StreamingPipelineWorker:
                     # 从输入队列获取批次（带超时）
                     batch = input_queue.get(block=True, timeout=10)
                     
-                    # None 表示流结束
+                    # 检查是否为PipelineSignal结束信号
+                    if isinstance(batch, PipelineSignal):
+                        logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 🔔 Received {batch}")
+                        
+                        # 向下游发送对应数量的结束信号
+                        for i in range(num_downstream_workers):
+                            downstream_signal = PipelineSignal(
+                                signal_type=END_OF_STREAM,
+                                source=self.worker_id,
+                                target_worker_count=num_downstream_workers
+                            )
+                            output_queue.put(downstream_signal, block=True)
+                        logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] 📤 Forwarded {num_downstream_workers} END_OF_STREAM signals to downstream")
+                        break
+                    
+                    # 向后兼容：处理 None 信号（旧版本）
                     if batch is None:
-                        logger.info(f"Worker {self.worker_id} received end signal")
-                        # 传递结束信号到下游
+                        logger.warning(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] ⚠️ Received legacy None signal")
                         output_queue.put(None, block=True)
                         break
                     
@@ -452,32 +513,41 @@ class StreamingPipelineOrchestrator:
             # 获取所有阶段名称（按顺序）
             stage_names = list(self.stage_queues.keys())
             
-            # 启动生产者（异步）
+            # 计算第一阶段的worker数量
+            first_stage_worker_count = len(self.stage_workers[stage_names[0]])
+            
+            # 启动生产者（异步）- 传入第一阶段的worker数量
             producer_queue = self.stage_queues[stage_names[0]]
             producer_task = self.producer.stream_batches.remote(
                 producer_queue,
-                max_batches
+                max_batches,
+                first_stage_worker_count  # 发送对应数量的结束信号
             )
+            logger.info(f"[PIPELINE] Producer started, will send {first_stage_worker_count} END_OF_STREAM signals to {stage_names[0]}")
             
             # 启动所有阶段的workers
             worker_tasks = []
             for stage_idx, stage_name in enumerate(stage_names):
                 input_queue = self.stage_queues[stage_name]
                 
-                # 确定输出队列
+                # 确定输出队列和下游worker数量
                 if stage_idx < len(stage_names) - 1:
                     output_queue = self.stage_queues[stage_names[stage_idx + 1]]
+                    next_stage_name = stage_names[stage_idx + 1]
+                    num_downstream_workers = len(self.stage_workers[next_stage_name])
                 else:
                     # 最后一个阶段，输出到结果队列
                     output_queue = Queue(maxsize=self.pipeline_config.queue_max_size)
                     self.stage_queues['results'] = output_queue
+                    num_downstream_workers = 1  # 结果队列只需要1个结束信号
                 
                 # 启动该阶段的所有workers
                 for worker in self.stage_workers[stage_name]:
                     task = worker.process_stream.remote(
                         input_queue,
                         output_queue,
-                        self.dead_letter_queue
+                        self.dead_letter_queue,
+                        num_downstream_workers
                     )
                     worker_tasks.append((stage_name, task))
             
