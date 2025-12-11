@@ -341,7 +341,8 @@ class AudioPreprocessingStage(PipelineStage):
         audio_config = AudioConfig(**config.get('audio', {}))
         self.preprocessor = AudioPreprocessor(audio_config)
         
-    """Preprocess audio and convert to tensors"""
+    def process(self, batch: DataBatch) -> DataBatch:
+        """Preprocess audio and convert to tensors"""
         processed_items = []
         
         for item in batch.items:
@@ -369,6 +370,15 @@ class AudioPreprocessingStage(PipelineStage):
             item.pop('audio_bytes', None)  # Remove raw bytes to save memory
             
             processed_items.append(item)
+        
+        # Create new batch with preprocessed audio
+        new_batch = DataBatch(
+            batch_id=batch.batch_id,
+            items=processed_items,
+            metadata={**batch.metadata, 'stage': 'audio_preprocessing'}
+        )
+        
+        return new_batch
 
 
 class AudioFeatureExtractor:
