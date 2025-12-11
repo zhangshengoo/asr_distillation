@@ -9,35 +9,8 @@ import ray
 from ray import data
 from ray.util.queue import Queue
 
-
-@dataclass
-class PipelineConfig:
-    """Pipeline configuration"""
-    num_cpu_workers: int = 10
-    num_gpu_workers: int = 1
-    cpu_worker_resources: Dict[str, float] = None
-    gpu_worker_resources: Dict[str, float] = None
-    batch_size: int = 32
-    max_concurrent_batches: int = 4
-    object_store_memory: int = 1024 * 1024 * 1024  # 1GB
-    checkpoint_interval: int = 1000
-    stage_workers: Dict[str, int] = None
-    
-    def __post_init__(self):
-        """初始化默认的stage_workers配置"""
-        if self.stage_workers is None:
-            self.stage_workers = {
-                'audio_download': 8,
-                'audio_preprocessing': 6,
-                'vad_processing': 4,
-                'segment_expansion': 4,
-                'feature_extraction': 6,
-                'batch_inference': 1,
-                'segment_aggregation': 2,
-                'post_processing': 2
-            }
-
-
+# 从配置管理器导入PipelineConfig
+from src.config.manager import PipelineConfig
 @dataclass
 class DataBatch:
     """Data batch for pipeline processing

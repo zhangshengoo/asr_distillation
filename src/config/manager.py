@@ -37,27 +37,47 @@ class PipelineConfig:
     """流水线配置 - 控制分布式处理和资源分配"""
     # CPU工作节点数量，负责音频预处理和特征提取
     num_cpu_workers: int = 10
-    
+
     # GPU工作节点数量，负责模型推理
     num_gpu_workers: int = 1
-    
+
     # CPU工作节点资源配置，每个节点的CPU核心数
     cpu_worker_resources: Dict[str, float] = field(default_factory=lambda: {"num_cpus": 1})
-    
+
     # GPU工作节点资源配置，包含CPU和GPU资源
     gpu_worker_resources: Dict[str, float] = field(default_factory=lambda: {"num_cpus": 1, "num_gpus": 1})
-    
+
     # 批处理大小，影响内存使用和处理效率
     batch_size: int = 32
-    
+
     # 最大并发批次数，控制并行处理能力
     max_concurrent_batches: int = 4
-    
+
     # Ray对象存储内存大小(字节)，用于节点间数据传输
     object_store_memory: int = 1024 * 1024 * 1024  # 1GB
-    
+
     # 检查点间隔，每处理多少批次保存一次状态
     checkpoint_interval: int = 1000
+
+    # 各阶段的Worker数量配置
+    stage_workers: Dict[str, int] = field(default_factory=lambda: {
+        'audio_download': 8,        # IO密集型阶段
+        'audio_preprocessing': 6,   # CPU密集型阶段
+        'vad_processing': 4,        # 并行处理阶段
+        'segment_expansion': 4,     # 中等CPU需求
+        'feature_extraction': 6,    # 中等CPU需求
+        'batch_inference': 1,       # GPU密集型阶段
+        'segment_aggregation': 2,   # 轻量级处理
+        'post_processing': 2        # 轻量级处理
+    })
+
+    # 新增流式处理配置
+    queue_max_size: int = 100  # 队列最大大小（背压控制）
+    worker_timeout: int = 300  # Worker超时时间（秒）
+    max_retries: int = 3  # 最大重试次数
+    checkpoint_dir: str = "./checkpoints"  # 检查点目录
+    enable_streaming: bool = True  # 启用流式处理
+    prefetch_batches: int = 10  # 预取批次数
 
 
 @dataclass
@@ -505,13 +525,24 @@ pipeline:
   max_concurrent_batches: 4
   object_store_memory: 1073741824  # 1GB
   checkpoint_interval: 1000
-  
+
   cpu_worker_resources:
     num_cpus: 1
-    
+
   gpu_worker_resources:
     num_cpus: 1
     num_gpus: 1
+
+  # Stage-specific worker count configuration
+  stage_workers:
+    audio_download: 8        # IO-intensive stage
+    audio_preprocessing: 6   # CPU-intensive stage
+    vad_processing: 4        # Parallel processing stage
+    segment_expansion: 4     # Medium CPU requirement
+    feature_extraction: 6    # Medium CPU requirement
+    batch_inference: 1       # GPU-intensive stage
+    segment_aggregation: 2   # Lightweight processing
+    post_processing: 2       # Lightweight processing
 
 audio:
   target_sample_rate: 16000

@@ -22,28 +22,8 @@ import ray
 from ray.util.queue import Queue, Empty, Full
 from loguru import logger
 
-
-@dataclass
-class PipelineConfig:
-    """Pipeline configuration"""
-    num_cpu_workers: int = 10
-    num_gpu_workers: int = 1
-    cpu_worker_resources: Dict[str, float] = None
-    gpu_worker_resources: Dict[str, float] = None
-    batch_size: int = 32
-    max_concurrent_batches: int = 4
-    object_store_memory: int = 1024 * 1024 * 1024  # 1GB
-    checkpoint_interval: int = 1000
-    
-    # 新增配置
-    queue_max_size: int = 100  # 队列最大大小（背压控制）
-    worker_timeout: int = 300  # Worker超时时间（秒）
-    max_retries: int = 3  # 最大重试次数
-    checkpoint_dir: str = "./checkpoints"  # 检查点目录
-    enable_streaming: bool = True  # 启用流式处理
-    prefetch_batches: int = 10  # 预取批次数
-
-
+# 从配置管理器导入PipelineConfig
+from src.config.manager import PipelineConfig
 @dataclass
 class DataBatch:
     """Data batch for pipeline processing"""
