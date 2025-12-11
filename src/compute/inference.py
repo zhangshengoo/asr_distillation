@@ -18,6 +18,7 @@ os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 os.environ["VLLM_LOGGING_LEVEL"] = "ERROR"
 
 from ..common import BatchData, SegmentItem, InferenceItem, FileResultItem
+from ..scheduling.pipeline import PipelineStage
 
 # Import Qwen3-Omni utilities
 from qwen_omni_utils import process_mm_info

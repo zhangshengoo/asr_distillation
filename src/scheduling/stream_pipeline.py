@@ -560,7 +560,7 @@ class StreamingPipelineOrchestrator:
         # 统计结果
         total_items = sum(len(batch.items) for batch in results)
         successful_items = sum(
-            len([item for item in batch.items if 'error' not in item])
+            len([item for item in batch.items if not item.metadata.get('error')])
             for batch in results
         )
         

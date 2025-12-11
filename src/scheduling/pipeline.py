@@ -11,8 +11,6 @@ from ray.util.queue import Queue
 
 # 从配置管理器导入PipelineConfig
 from src.config.manager import PipelineConfig
-# 从配置管理器导入PipelineConfig
-from src.config.manager import PipelineConfig
 from src.common import BatchData, SourceItem
 
 

@@ -460,8 +460,6 @@ class AudioFeatureStage(PipelineStage):
 
     def process(self, batch: BatchData[SegmentItem]) -> BatchData[SegmentItem]:
         """Prepare audio data for Qwen3-Omni model"""
-         # This stage effectively might just be a NOP or validation for Qwen3-Omni
-         # if the model takes raw waveforms which are already in SegmentItems.
+        # This stage effectively might just be a NOP or validation for Qwen3-Omni
+        # if the model takes raw waveforms which are already in SegmentItems.
         return batch.map(self._prepare_item, new_batch_id=f"{batch.batch_id}_features")
-        
-        return new_batch

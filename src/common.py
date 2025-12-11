@@ -25,6 +25,7 @@ class SourceItem(PipelineItem):
     oss_path: str
     format: str = "wav"
     duration: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class RawAudioItem(SourceItem):

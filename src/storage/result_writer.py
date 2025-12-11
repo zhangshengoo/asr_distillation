@@ -344,7 +344,7 @@ class ResultWriterStage:
             return batch
             
         except Exception as e:
-            logger.error(f"Error writing batch results: {e}")
+            #logger.error(f"Error writing batch results: {e}")
             batch.metadata['error'] = str(e)
             return batch
     
