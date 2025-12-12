@@ -120,7 +120,14 @@ writer:
   async_upload: true
   retry_attempts: 3
   retry_delay: 1.0
-  sync_mode: true  # 同步模式，默认为false（异步），设置为true可使用同步版本
+  #sync_mode: true  # 同步模式，默认为false（异步），设置为true可使用同步版本
+  # ✅ 新增优化参数
+  buffer_size_mb: 10.0           # 初始buffer大小
+  max_buffer_size_mb: 50.0       # 最大buffer
+  min_buffer_size_mb: 5.0        # 最小buffer
+  multipart_threshold_mb: 100    # 分片上传阈值
+  part_size_mb: 10               # 分片大小
+  max_concurrent_parts: 4        # 分片并发度
 
 monitoring:
   enable_prometheus: true

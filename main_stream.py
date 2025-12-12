@@ -27,7 +27,7 @@ from src.compute.inference import (
     BatchInferenceStage,
     PostProcessingStage
 )
-from src.storage.result_writer import ResultWriterStage, SyncResultWriterStage  # 保留导入
+from src.storage.result_writer import ResultWriterStage, SyncResultWriterStage, OptimizedResultWriterStage  # 保留导入
 from src.monitoring.system import MonitoringSystem
 
 
@@ -194,13 +194,11 @@ async def run_pipeline(config_path: str,
                     'storage': config.data.storage
                 }
             },
-            # ✅ 新增：第9个Stage - 结果写入
-            # 根据配置选择同步或异步版本
             {
-                'type': 'cpu',  # 写入是IO密集型，用CPU即可
-                'class': SyncResultWriterStage if getattr(config.writer, 'sync_mode', True) else ResultWriterStage,
+                'type': 'cpu',
+                'class': OptimizedResultWriterStage,  # ✅ 使用优化版本
                 'name': 'result_writer',
-                'num_workers': stage_workers_config.get('result_writer', 1),  # 通常1个即可
+                'num_workers': stage_workers_config.get('result_writer', 1),
                 'config': {
                     'writer': config.writer.__dict__,
                     'storage': config.data.storage
