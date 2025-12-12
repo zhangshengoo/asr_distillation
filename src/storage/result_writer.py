@@ -5,16 +5,128 @@ import asyncio
 import time
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Optional, AsyncGenerator
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass, asdict, is_dataclass
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from datetime import datetime
+from enum import Enum
 
-# ✅ 修改：导入正确的类名
+import numpy as np
+
 from ..data.storage import MediaStorageManager
 from ..common import BatchData, FileResultItem
 
 logger = logging.getLogger(__name__)
+
+
+class EnhancedJSONEncoder(json.JSONEncoder):
+    """增强的JSON编码器 - 支持dataclass、Enum、numpy等类型
+    
+    自动处理常见的不可序列化对象：
+    - dataclass → dict
+    - Enum → value
+    - numpy类型 → Python原生类型
+    - datetime → ISO格式字符串
+    - bytes → base64字符串
+    """
+    
+    def default(self, obj):
+        # 处理 dataclass
+        if is_dataclass(obj):
+            return asdict(obj)
+        
+        # 处理 Enum
+        if isinstance(obj, Enum):
+            return obj.value
+        
+        # 处理 numpy 类型
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        
+        # 处理 datetime
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        
+        # 处理 bytes
+        if isinstance(obj, bytes):
+            import base64
+            return base64.b64encode(obj).decode('utf-8')
+        
+        # 处理 Path
+        if isinstance(obj, Path):
+            return str(obj)
+        
+        # 默认处理
+        try:
+            return super().default(obj)
+        except TypeError:
+            # 最后的兜底：尝试转换为字符串
+            return str(obj)
+
+
+def safe_serialize(obj: Any) -> Any:
+    """安全的序列化预处理
+    
+    递归处理复杂对象，确保所有内容都可JSON序列化
+    
+    Args:
+        obj: 要序列化的对象
+        
+    Returns:
+        可序列化的对象
+    """
+    # 处理字典
+    if isinstance(obj, dict):
+        return {k: safe_serialize(v) for k, v in obj.items()}
+    
+    # 处理列表
+    if isinstance(obj, (list, tuple)):
+        return [safe_serialize(item) for item in obj]
+    
+    # 处理 dataclass
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return safe_serialize(asdict(obj))
+    
+    # 处理 Enum
+    if isinstance(obj, Enum):
+        return obj.value
+    
+    # 处理 numpy 类型
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    
+    # 处理 datetime
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    
+    # 处理 bytes
+    if isinstance(obj, bytes):
+        import base64
+        return base64.b64encode(obj).decode('utf-8')
+    
+    # 处理 Path
+    if isinstance(obj, Path):
+        return str(obj)
+    
+    # 基本类型直接返回
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    
+    # 其他类型尝试转字符串
+    try:
+        json.dumps(obj)  # 测试是否可序列化
+        return obj
+    except (TypeError, ValueError):
+        return str(obj)
 
 
 @dataclass
@@ -80,41 +192,49 @@ class ResultBuffer:
 
 
 class FileWriter:
-    """File writing utilities"""
+    """File writing utilities with enhanced serialization"""
     
     def __init__(self, config: WriteConfig):
         self.config = config
         
     def write_jsonl(self, data: List[Dict[str, Any]], file_path: str) -> bool:
-        """Write data as JSONL"""
+        """Write data as JSONL with safe serialization"""
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 for item in data:
-                    f.write(json.dumps(item, ensure_ascii=False) + '\n')
+                    # ✅ 使用增强编码器和安全序列化
+                    safe_item = safe_serialize(item)
+                    json_str = json.dumps(safe_item, ensure_ascii=False, cls=EnhancedJSONEncoder)
+                    f.write(json_str + '\n')
             return True
         except Exception as e:
-            logger.error(f"Error writing JSONL: {e}")
+            logger.error(f"Error writing JSONL: {e}", exc_info=True)
             return False
     
     def write_json(self, data: List[Dict[str, Any]], file_path: str) -> bool:
-        """Write data as JSON array"""
+        """Write data as JSON array with safe serialization"""
         try:
+            # ✅ 使用增强编码器和安全序列化
+            safe_data = safe_serialize(data)
             with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(safe_data, f, ensure_ascii=False, indent=2, cls=EnhancedJSONEncoder)
             return True
         except Exception as e:
-            logger.error(f"Error writing JSON: {e}")
+            logger.error(f"Error writing JSON: {e}", exc_info=True)
             return False
     
     def write_parquet(self, data: List[Dict[str, Any]], file_path: str) -> bool:
         """Write data as Parquet"""
         try:
             import pandas as pd
-            df = pd.DataFrame(data)
+            
+            # ✅ Parquet也需要安全序列化
+            safe_data = safe_serialize(data)
+            df = pd.DataFrame(safe_data)
             df.to_parquet(file_path, index=False)
             return True
         except Exception as e:
-            logger.error(f"Error writing Parquet: {e}")
+            logger.error(f"Error writing Parquet: {e}", exc_info=True)
             return False
     
     def write_data(self, data: List[Dict[str, Any]], file_path: str) -> bool:
@@ -131,14 +251,11 @@ class FileWriter:
 
 
 class AsyncResultWriter:
-    """Async result writer with buffering
-    
-    支持多种输出格式和存储后端（本地文件、OSS等）
-    """
+    """Async result writer with buffering"""
     
     def __init__(self, 
                  config: WriteConfig,
-                 storage_manager: Optional[MediaStorageManager] = None):  # ✅ 修改类型
+                 storage_manager: Optional[MediaStorageManager] = None):
         """初始化异步结果写入器
         
         Args:
@@ -235,7 +352,7 @@ class AsyncResultWriter:
                 await asyncio.sleep(0.1)
                 
             except Exception as e:
-                logger.error(f"Error in writer loop: {e}")
+                logger.error(f"Error in writer loop: {e}", exc_info=True)
                 self.stats['errors'] += 1
                 await asyncio.sleep(1)
     
@@ -282,19 +399,11 @@ class AsyncResultWriter:
             logger.info(f"Wrote {len(batch)} items to {filename}")
             
         except Exception as e:
-            logger.error(f"Error writing batch: {e}")
+            logger.error(f"Error writing batch: {e}", exc_info=True)
             self.stats['errors'] += 1
     
     async def _upload_to_storage(self, local_file: str, remote_filename: str) -> bool:
-        """Upload file to storage (OSS/云存储)
-        
-        Args:
-            local_file: 本地文件路径
-            remote_filename: 远程文件名
-            
-        Returns:
-            上传是否成功
-        """
+        """Upload file to storage"""
         if not self.storage_manager:
             return True
             
@@ -322,7 +431,7 @@ class AsyncResultWriter:
             return False
             
         except Exception as e:
-            logger.error(f"Error uploading to storage: {e}")
+            logger.error(f"Error uploading to storage: {e}", exc_info=True)
             return False
     
     def get_stats(self) -> Dict[str, Any]:
@@ -335,16 +444,12 @@ class AsyncResultWriter:
 
 
 class ResultWriterStage:
-    """Result writer stage for pipeline integration
-    
-    作为Pipeline的最后一个Stage，负责将处理结果写入文件/OSS
-    """
+    """Result writer stage for pipeline integration"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         write_config = WriteConfig(**config.get('writer', {}))
         
-        # ✅ 使用正确的类名
         storage_manager = None
         if 'storage' in config:
             storage_manager = MediaStorageManager(config['storage'])
@@ -369,23 +474,13 @@ class ResultWriterStage:
             self._started = True
     
     def process(self, batch: BatchData) -> BatchData:
-        """同步处理接口（供StreamingPipelineWorker调用）
-        
-        注意：StreamingPipelineWorker会自动检测并使用process_async，
-        但保留此方法以防万一
-        """
+        """同步处理接口"""
         self._ensure_started()
-        
-        # 在事件循环中运行异步方法
         self._loop.run_until_complete(self.process_async(batch))
-        
         return batch
     
     async def process_async(self, batch: BatchData) -> BatchData:
-        """异步处理批次并写入结果
-        
-        这是主要的处理方法，会被StreamingPipelineWorker的异步机制调用
-        """
+        """异步处理批次并写入结果"""
         try:
             # 确保写入器已启动
             if not self._started:
@@ -403,6 +498,10 @@ class ResultWriterStage:
                         'stats': getattr(item, 'stats', {}),
                         'metadata': getattr(item, 'metadata', {})
                     }
+                    
+                    # ✅ 在写入前进行安全序列化预处理
+                    result_dict = safe_serialize(result_dict)
+                    
                     results.append(result_dict)
 
             # 异步批量写入
@@ -412,7 +511,7 @@ class ResultWriterStage:
             else:
                 self.logger.warning(f"No valid results in batch {batch.batch_id}")
                 
-            # 更新batch元数据（传递给下游统计队列）
+            # 更新batch元数据
             batch.metadata['stage'] = 'result_writer'
             batch.metadata['results_written'] = len(results)
             batch.metadata['write_completed'] = True
@@ -431,13 +530,11 @@ class ResultWriterStage:
         """清理资源"""
         if self._started and self._loop:
             try:
-                # 停止异步写入器
                 self._loop.run_until_complete(self.async_writer.stop())
                 self.logger.info("AsyncResultWriter stopped")
             except Exception as e:
                 self.logger.error(f"Error stopping writer: {e}")
             finally:
-                # 关闭事件循环
                 if self._loop and not self._loop.is_closed():
                     self._loop.close()
                 self._loop = None
@@ -449,7 +546,7 @@ class ResultWriterStage:
 
 
 class BatchResultAggregator:
-    """Aggregate results from multiple batches (向后兼容)"""
+    """Aggregate results from multiple batches"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -471,12 +568,10 @@ class BatchResultAggregator:
         end_time = time.time()
         duration = end_time - self.start_time
         
-        # Calculate statistics
         total_items = len(self.aggregated_results)
         successful_items = sum(1 for item in self.aggregated_results if 'error' not in item)
         error_items = total_items - successful_items
         
-        # Calculate throughput
         throughput = total_items / duration if duration > 0 else 0
         
         return {
@@ -497,5 +592,5 @@ class BatchResultAggregator:
             file_writer = FileWriter(config)
             return file_writer.write_data(self.aggregated_results, output_path)
         except Exception as e:
-            logger.error(f"Error saving aggregated results: {e}")
+            logger.error(f"Error saving aggregated results: {e}", exc_info=True)
             return False
