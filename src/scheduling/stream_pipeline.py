@@ -49,7 +49,7 @@ class TerminationBarrier:
     def __init__(self, 
                  upstream_worker_count: int, 
                  downstream_worker_count: int,
-                 output_queue: Queue,
+                 output_queue: Optional[Queue],
                  stage_name: str = "unknown"):
         self.upstream_worker_count = upstream_worker_count
         self.downstream_worker_count = downstream_worker_count
@@ -65,6 +65,12 @@ class TerminationBarrier:
             
         self.signals_received += 1
         if self.signals_received >= self.upstream_worker_count:
+            # 如果没有输出队列（最后一个stage），直接标记完成
+            if self.output_queue is None:
+                logger.info(f"[BARRIER:{self.stage_name}] All upstream workers finished. Final stage - no downstream signals.")
+                self.finished = True
+                return
+            
             logger.info(f"[BARRIER:{self.stage_name}] All upstream workers finished. Sending {self.downstream_worker_count} END_OF_STREAM signals downstream.")
             # 向下游发送指定数量的结束信号
             for i in range(self.downstream_worker_count):
@@ -83,7 +89,6 @@ class TerminationBarrier:
             self.finished = True
         else:
             logger.debug(f"[BARRIER:{self.stage_name}] Received signal from {source} ({self.signals_received}/{self.upstream_worker_count})")
-            
 
 
 class PipelineStage(ABC):
@@ -304,20 +309,22 @@ class StreamingPipelineWorker:
         
     def process_stream(self,
                       input_queue: Queue,
-                      output_queue: Queue,
+                      output_queue: Optional[Queue],
                       dead_letter_queue: Queue,
                       num_downstream_workers: int = 1,
-                      barrier_actor: Optional[Any] = None) -> Dict[str, Any]:
+                      barrier_actor: Optional[Any] = None,
+                      is_final_stage: bool = False) -> Dict[str, Any]:
         """从输入队列流式处理数据
         
         Args:
             input_queue: 输入队列
-            output_queue: 输出队列
+            output_queue: 输出队列（如果是最后stage则为None）
             dead_letter_queue: 死信队列
             num_downstream_workers: 下游stage的worker数量，用于发送正确数量的结束信号
             barrier_actor: 终止屏障Actor (TerminationBarrier)
+            is_final_stage: 是否为最后一个stage
         """
-        logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Started, downstream_workers={num_downstream_workers}")
+        logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Started, is_final_stage={is_final_stage}, downstream_workers={num_downstream_workers}")
         
         try:
             while True:
@@ -333,8 +340,8 @@ class StreamingPipelineWorker:
                             # 使用屏障协调终止
                             logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Signaling termination barrier...")
                             barrier_actor.signal.remote(self.worker_id)
-                        else:
-                            # 传统模式：直接向下游发送对应数量的结束信号
+                        elif not is_final_stage and output_queue:
+                            # 非最后stage：传统模式，向下游发送对应数量的结束信号
                             for i in range(num_downstream_workers):
                                 downstream_signal = PipelineSignal(
                                     signal_type=END_OF_STREAM,
@@ -343,12 +350,16 @@ class StreamingPipelineWorker:
                                 )
                                 output_queue.put(downstream_signal, block=True)
                             logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Forwarded {num_downstream_workers} END_OF_STREAM signals to downstream")
+                        else:
+                            # 最后stage：直接退出
+                            logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Final stage received END_OF_STREAM, exiting...")
                         break
                     
                     # 向后兼容：处理 None 信号（旧版本）
                     if batch is None:
                         logger.warning(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Received legacy None signal")
-                        output_queue.put(None, block=True)
+                        if not is_final_stage and output_queue:
+                            output_queue.put(None, block=True)
                         break
                     
                     # 处理批次
@@ -382,13 +393,14 @@ class StreamingPipelineWorker:
                         elif len(result.items) > len(batch.items) * 10:
                             logger.debug(f"[STAGE:{self.stage_name}] Batch '{batch.batch_id}' EXPANDED: {len(batch.items)} -> {len(result.items)} items (expansion stage)")
                         
-                        # 放入输出队列
-                        # 增加超时时间以应对背压，避免直接报错 (60s -> 300s)
-                        try:
-                            output_queue.put(result, block=True, timeout=300)
-                        except Full:
-                            logger.error(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] CRITICAL: Output queue FULL after 300s wait. Deadlock potential!")
-                            raise
+                        # 放入输出队列（如果不是最后stage）
+                        if not is_final_stage and output_queue is not None:
+                            try:
+                                output_queue.put(result, block=True, timeout=300)
+                            except Full:
+                                logger.error(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] CRITICAL: Output queue FULL after 300s wait. Deadlock potential!")
+                                raise
+                        # 最后stage直接完成，不输出
                         
                         self.processed_count += 1
                         self.total_processing_time += time.time() - start_time
@@ -548,7 +560,7 @@ class StreamingPipelineOrchestrator:
         # 输出pipeline拓扑结构
         stage_names = list(self.stage_queues.keys())
         topology = " -> ".join(stage_names)
-        logger.info(f"[PIPELINE] Topology: PRODUCER -> {topology} -> RESULTS")
+        logger.info(f"[PIPELINE] Topology: PRODUCER -> {topology}")
         logger.info(f"[PIPELINE] Total workers: {sum(len(w) for w in self.stage_workers.values())}")
         
         logger.info("Streaming pipeline setup completed")
@@ -596,11 +608,12 @@ class StreamingPipelineOrchestrator:
                     output_queue = self.stage_queues[stage_names[stage_idx + 1]]
                     next_stage_name = stage_names[stage_idx + 1]
                     num_downstream_workers = len(self.stage_workers[next_stage_name])
+                    is_final_stage = False
                 else:
-                    # 最后一个阶段，输出到结果队列
-                    output_queue = Queue(maxsize=self.pipeline_config.queue_max_size)
-                    self.stage_queues['results'] = output_queue
-                    num_downstream_workers = 1  # 结果队列只需要1个结束信号
+                    # 最后一个阶段，不需要输出队列
+                    output_queue = None
+                    num_downstream_workers = 0
+                    is_final_stage = True
                 
                 # 创建终止屏障 (Termination Barrier)
                 # upstream_count = 当前stage worker数量
@@ -620,20 +633,11 @@ class StreamingPipelineOrchestrator:
                         output_queue,
                         self.dead_letter_queue,
                         num_downstream_workers,
-                        barrier  # 传入屏障
+                        barrier,
+                        is_final_stage  # 传递is_final_stage标志
                     )
                     worker_tasks.append((stage_name, task))
             
-            # 启动结果收集线程（避免死锁的关键：必须在等待worker之前开始消费结果）
-            results = []
-            # collection_thread = threading.Thread(
-            #     target=self._collect_results,
-            #     args=(results,),
-            #     daemon=True
-            # )
-            # collection_thread.start()
-            # logger.info("[PIPELINE] Result collection thread started")
-
             # 监控进度
             progress_thread = threading.Thread(
                 target=self._monitor_progress,
@@ -658,22 +662,13 @@ class StreamingPipelineOrchestrator:
             # 等待生产者完成
             ray.get(producer_task)
             
-            # # 等待结果收集完成
-            # collection_thread.join(timeout=60)
-            # if collection_thread.is_alive():
-            #     logger.warning("[PIPELINE] Result collection thread did not finish cleanly")
-            
-            # 计算统计信息
-            execution_stats = self._compute_stats(worker_stats, results)
+            # 计算统计信息（不需要results列表）
+            execution_stats = self._compute_stats(worker_stats, [])
             
             logger.info("=" * 60)
             logger.info("Pipeline Execution Completed")
             logger.info("=" * 60)
             logger.info(f"Total Duration:   {execution_stats['total_duration']:.2f}s")
-            logger.info(f"Total Batches:    {execution_stats['total_batches']}")
-            logger.info(f"Total Items:      {execution_stats['total_items']}")
-            logger.info(f"Success Rate:     {execution_stats['success_rate']:.2%}")
-            logger.info(f"Throughput:       {execution_stats['throughput']:.2f} items/s")
             logger.info(f"Dead Letter:      {execution_stats['dead_letter_count']}")
             logger.info("-" * 60)
             logger.info("Stage Statistics:")
@@ -689,54 +684,6 @@ class StreamingPipelineOrchestrator:
         finally:
             self._cleanup()
 
-    def _collect_results(self, results_list: List[Dict[str, Any]]) -> None:
-        """收集Pipeline结果元数据（轻量级）
-        
-        注意：实际结果已由 ResultWriterStage 写入文件，
-        这里只收集统计所需的元数据
-        """
-        result_queue = self.stage_queues.get('results')
-        if not result_queue:
-            return
-
-        logger.info("[PIPELINE] Result collector started (metadata only)")
-        while True:
-            try:
-                # 阻塞直到有数据，超时用于检查退出条件
-                batch = result_queue.get(block=True, timeout=5)
-                
-                # 检查是否为PipelineSignal结束信号
-                if isinstance(batch, PipelineSignal):
-                    if batch.signal_type == END_OF_STREAM:
-                        logger.info(f"[PIPELINE] Received END_OF_STREAM signal in results: {batch}")
-                        break
-                elif batch is None:
-                    # 兼容旧版本
-                    logger.info("[PIPELINE] Received None signal in results")
-                    break
-                else:
-                    # ✅ 只收集轻量级元数据，不存完整数据
-                    metadata = {
-                        'batch_id': batch.batch_id,
-                        'item_count': len(batch.items),
-                        'successful_count': len([
-                            item for item in batch.items 
-                            if not item.metadata.get('error')
-                        ]),
-                        'stage': batch.metadata.get('stage'),
-                        'processed_at': batch.metadata.get('processed_at')
-                    }
-                    results_list.append(metadata)
-                    
-            except Empty:
-                # 队列暂时为空，继续等待
-                continue
-            except Exception as e:
-                logger.error(f"[PIPELINE] Error collecting results: {e}")
-                break
-        
-        logger.info(f"[PIPELINE] Collected metadata for {len(results_list)} batches")
-    
     def _monitor_progress(self, progress_callback: Optional[Callable]) -> None:
         """监控Pipeline进度"""
         last_update = time.time()
@@ -823,22 +770,11 @@ class StreamingPipelineOrchestrator:
                 'num_workers': len(stats_list)
             }
         
-        # ✅ 从元数据计算结果统计
-        total_batches = len(results)
-        total_items = sum(r['item_count'] for r in results)
-        successful_items = sum(r['successful_count'] for r in results)
-        
         # 死信队列
         dead_letter_count = self.dead_letter_queue.qsize()
         
         return {
             'total_duration': total_duration,
-            'total_batches': total_batches,
-            'total_items': total_items,
-            'successful_items': successful_items,
-            'failed_items': total_items - successful_items,
-            'success_rate': successful_items / total_items if total_items > 0 else 0,
-            'throughput': total_items / total_duration if total_duration > 0 else 0,
             'dead_letter_count': dead_letter_count,
             'stage_stats': stage_stats
         }
