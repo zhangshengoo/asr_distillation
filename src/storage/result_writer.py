@@ -1,5 +1,7 @@
 """Async result writing and storage management"""
-
+import io
+import uuid
+import oss2
 import json
 import asyncio
 import time
@@ -845,7 +847,7 @@ class OptimizedResultWriter:
                 self.buffer.append(item)
                 self.buffer_size_bytes += item_size
                 
-                if self.buffer_size_bytes >= self.current_buffer_limit:
+                if self.buffer_size_bytes >= self.current_buffer_limit or len(self.buffer) >= self.config.batch_size:
                     self._flush_buffer()
             
             return True
