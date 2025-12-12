@@ -66,9 +66,6 @@ class TerminationBarrier:
         self.signals_received += 1
         if self.signals_received >= self.upstream_worker_count:
             logger.info(f"[BARRIER:{self.stage_name}] All upstream workers finished. Sending {self.downstream_worker_count} END_OF_STREAM signals downstream.")
-        else:
-            logger.debug(f"[BARRIER:{self.stage_name}] Received signal from {source} ({self.signals_received}/{self.upstream_worker_count})")
-            
             # 向下游发送指定数量的结束信号
             for i in range(self.downstream_worker_count):
                 signal = PipelineSignal(
@@ -84,7 +81,9 @@ class TerminationBarrier:
                     logger.error(f"[BARRIER:{self.stage_name}] Error putting signal: {e}")
             
             self.finished = True
-
+        else:
+            logger.debug(f"[BARRIER:{self.stage_name}] Received signal from {source} ({self.signals_received}/{self.upstream_worker_count})")
+            
 
 
 class PipelineStage(ABC):
@@ -627,13 +626,13 @@ class StreamingPipelineOrchestrator:
             
             # 启动结果收集线程（避免死锁的关键：必须在等待worker之前开始消费结果）
             results = []
-            collection_thread = threading.Thread(
-                target=self._collect_results,
-                args=(results,),
-                daemon=True
-            )
-            collection_thread.start()
-            logger.info("[PIPELINE] Result collection thread started")
+            # collection_thread = threading.Thread(
+            #     target=self._collect_results,
+            #     args=(results,),
+            #     daemon=True
+            # )
+            # collection_thread.start()
+            # logger.info("[PIPELINE] Result collection thread started")
 
             # 监控进度
             progress_thread = threading.Thread(
@@ -659,10 +658,10 @@ class StreamingPipelineOrchestrator:
             # 等待生产者完成
             ray.get(producer_task)
             
-            # 等待结果收集完成
-            collection_thread.join(timeout=60)
-            if collection_thread.is_alive():
-                logger.warning("[PIPELINE] Result collection thread did not finish cleanly")
+            # # 等待结果收集完成
+            # collection_thread.join(timeout=60)
+            # if collection_thread.is_alive():
+            #     logger.warning("[PIPELINE] Result collection thread did not finish cleanly")
             
             # 计算统计信息
             execution_stats = self._compute_stats(worker_stats, results)

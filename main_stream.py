@@ -27,7 +27,7 @@ from src.compute.inference import (
     BatchInferenceStage,
     PostProcessingStage
 )
-from src.storage.result_writer import ResultWriterStage  # 保留导入
+from src.storage.result_writer import ResultWriterStage, SyncResultWriterStage  # 保留导入
 from src.monitoring.system import MonitoringSystem
 
 
@@ -195,9 +195,10 @@ async def run_pipeline(config_path: str,
                 }
             },
             # ✅ 新增：第9个Stage - 结果写入
+            # 根据配置选择同步或异步版本
             {
                 'type': 'cpu',  # 写入是IO密集型，用CPU即可
-                'class': ResultWriterStage,
+                'class': SyncResultWriterStage if config.writer.get('sync_mode', False) else ResultWriterStage,
                 'name': 'result_writer',
                 'num_workers': stage_workers_config.get('result_writer', 1),  # 通常1个即可
                 'config': {
@@ -215,8 +216,9 @@ async def run_pipeline(config_path: str,
         
         # 7. 进度回调
         def progress_callback(current: int, queue_stats: dict):
-            if current % 100 == 0:  # 每100次更新打印一次
-                logger.info(f"Progress: {current} items processed")
+            pass
+            #if current % 100 == 0:  # 每100次更新打印一次
+                #logger.info(f"Progress: {current} items processed")
         
         # 8. 运行Pipeline
         logger.info("Starting pipeline execution...")

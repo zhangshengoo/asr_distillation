@@ -120,6 +120,7 @@ writer:
   async_upload: true
   retry_attempts: 3
   retry_delay: 1.0
+  sync_mode: true  # 同步模式，默认为false（异步），设置为true可使用同步版本
 
 monitoring:
   enable_prometheus: true

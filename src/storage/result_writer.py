@@ -495,8 +495,8 @@ class ResultWriterStage:
                         'file_id': item.file_id,
                         'transcription': getattr(item, 'transcription', ''),
                         'segments': getattr(item, 'segments', []),
-                        'stats': getattr(item, 'stats', {}),
-                        'metadata': getattr(item, 'metadata', {})
+                        #'stats': getattr(item, 'stats', {}),
+                        #'metadata': getattr(item, 'metadata', {})
                     }
                     
                     # ✅ 在写入前进行安全序列化预处理
@@ -594,3 +594,197 @@ class BatchResultAggregator:
         except Exception as e:
             logger.error(f"Error saving aggregated results: {e}", exc_info=True)
             return False
+
+
+class SyncResultWriter:
+    """同步结果写入器 - 与AsyncResultWriter功能对齐的同步版本"""
+    
+    def __init__(self, 
+                 config: WriteConfig,
+                 storage_manager: Optional[MediaStorageManager] = None):
+        """初始化同步结果写入器
+        
+        Args:
+            config: 写入配置
+            storage_manager: 媒体存储管理器（支持OSS等云存储）
+        """
+        self.config = config
+        self.storage_manager = storage_manager
+        self.file_writer = FileWriter(config)  # 复用现有的FileWriter
+        self.executor = ThreadPoolExecutor(max_workers=4)  # 用于文件I/O操作
+        
+        # Statistics
+        self.stats = {
+            'items_written': 0,
+            'files_written': 0,
+            'errors': 0,
+            'last_flush': time.time()
+        }
+        
+    def write_item(self, item: Dict[str, Any]) -> None:
+        """写入单个项目"""
+        self.write_batch([item])
+    
+    def write_batch(self, items: List[Dict[str, Any]]) -> bool:
+        """写入批次数据
+        
+        Args:
+            items: 要写入的数据项列表
+            
+        Returns:
+            bool: 写入是否成功
+        """
+        if not items:
+            return True
+            
+        try:
+            # 生成带时间戳的文件名
+            timestamp = int(time.time())
+            filename = f"results_{timestamp}.{self.config.output_format}"
+            
+            # 写入临时文件
+            temp_file = f"/tmp/{filename}"
+            success = self.file_writer.write_data(items, temp_file)
+            
+            if not success:
+                self.stats['errors'] += 1
+                logger.error(f"Failed to write batch to {temp_file}")
+                return False
+            
+            # 上传到存储（如果配置了存储管理器）
+            upload_success = True
+            if self.storage_manager and self.config.async_upload:
+                upload_success = self._upload_to_storage(temp_file, filename)
+                if upload_success:
+                    # 上传成功后删除临时文件
+                    Path(temp_file).unlink(missing_ok=True)
+                    logger.debug(f"Uploaded and cleaned up {temp_file}")
+                else:
+                    self.stats['errors'] += 1
+                    logger.warning(f"Upload failed, keeping local file: {temp_file}")
+            
+            # 只有在写入和上传都成功时才更新统计
+            if upload_success:
+                self.stats['items_written'] += len(items)
+                self.stats['files_written'] += 1
+                self.stats['last_flush'] = time.time()
+            
+            logger.info(f"Wrote {len(items)} items to {filename}, upload_success={upload_success}")
+            return upload_success
+            
+        except Exception as e:
+            logger.error(f"Error writing batch: {e}", exc_info=True)
+            self.stats['errors'] += 1
+            return False
+    
+    def _upload_to_storage(self, local_file: str, remote_filename: str) -> bool:
+        """上传文件到存储（同步版本）"""
+        if not self.storage_manager:
+            return True
+            
+        try:
+            # 上传带重试逻辑
+            for attempt in range(self.config.retry_attempts):
+                batch_id = Path(remote_filename).stem
+                success = self.storage_manager.upload_batch_results(local_file, batch_id)
+                
+                if success:
+                    logger.info(f"Uploaded {remote_filename} to storage")
+                    return True
+                    
+                if attempt < self.config.retry_attempts - 1:
+                    delay = self.config.retry_delay * (2 ** attempt)
+                    logger.warning(f"Upload failed, retrying in {delay}s... (attempt {attempt + 1}/{self.config.retry_attempts})")
+                    time.sleep(delay)
+            
+            logger.error(f"Upload failed after {self.config.retry_attempts} attempts")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error uploading to storage: {e}", exc_info=True)
+            return False
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取写入统计"""
+        return self.stats.copy()
+    
+    def flush(self) -> bool:
+        """刷新缓冲区（同步版本中不需要缓冲，所以只是返回状态）"""
+        return True
+    
+    def close(self) -> None:
+        """关闭写入器，清理资源"""
+        self.executor.shutdown(wait=True)
+        logger.info("SyncResultWriter closed")
+
+
+class SyncResultWriterStage:
+    """同步结果写入阶段 - 与ResultWriterStage功能对齐的同步版本"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        write_config = WriteConfig(**config.get('writer', {}))
+        
+        storage_manager = None
+        if 'storage' in config:
+            storage_manager = MediaStorageManager(config['storage'])
+        
+        self.sync_writer = SyncResultWriter(write_config, storage_manager)
+        self.logger = logging.getLogger("SyncResultWriterStage")
+    
+    def process(self, batch: BatchData) -> BatchData:
+        """同步处理批次并写入结果"""
+        try:
+            # 提取结果并转换为字典
+            results = []
+            for item in batch.items:
+                if hasattr(item, 'file_id'):
+                    result_dict = {
+                        'file_id': item.file_id,
+                        'transcription': getattr(item, 'transcription', ''),
+                        'segments': getattr(item, 'segments', []),
+                        #'stats': getattr(item, 'stats', {}),
+                        #'metadata': getattr(item, 'metadata', {})
+                    }
+                    
+                    # 在写入前进行安全序列化预处理
+                    result_dict = safe_serialize(result_dict)
+                    
+                    results.append(result_dict)
+
+            # 同步批量写入
+            if results:
+                success = self.sync_writer.write_batch(results)
+                if success:
+                    self.logger.debug(f"Wrote {len(results)} results from batch {batch.batch_id}")
+                else:
+                    self.logger.error(f"Failed to write results from batch {batch.batch_id}")
+            else:
+                self.logger.warning(f"No valid results in batch {batch.batch_id}")
+                
+            # 更新batch元数据
+            batch.metadata['stage'] = 'sync_result_writer'
+            batch.metadata['results_written'] = len(results)
+            batch.metadata['write_completed'] = True
+            
+            return batch
+            
+        except Exception as e:
+            import traceback
+            self.logger.error(f"Error writing batch {batch.batch_id}: {e}")
+            self.logger.error(f"Traceback:\n{traceback.format_exc()}")
+            batch.metadata['error'] = str(e)
+            batch.metadata['write_completed'] = False
+            return batch
+    
+    def cleanup(self):
+        """清理资源"""
+        try:
+            self.sync_writer.close()
+            self.logger.info("SyncResultWriter closed")
+        except Exception as e:
+            self.logger.error(f"Error closing sync writer: {e}")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取写入统计"""
+        return self.sync_writer.get_stats()

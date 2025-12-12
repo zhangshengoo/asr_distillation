@@ -73,7 +73,7 @@ class PipelineConfig:
 
     # 新增流式处理配置
     queue_max_size: int = 100  # 队列最大大小（背压控制）
-    worker_timeout: int = 300  # Worker超时时间（秒）
+    worker_timeout: Optional[int] = None  # Worker超时时间（秒）
     max_retries: int = 3  # 最大重试次数
     checkpoint_dir: str = "./checkpoints"  # 检查点目录
     enable_streaming: bool = True  # 启用流式处理
