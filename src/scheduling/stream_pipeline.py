@@ -689,14 +689,18 @@ class StreamingPipelineOrchestrator:
             raise
         finally:
             self._cleanup()
-            
-    def _collect_results(self, results_list: List[BatchData]) -> None:
-        """收集Pipeline结果（在独立线程中运行）"""
+
+    def _collect_results(self, results_list: List[Dict[str, Any]]) -> None:
+        """收集Pipeline结果元数据（轻量级）
+        
+        注意：实际结果已由 ResultWriterStage 写入文件，
+        这里只收集统计所需的元数据
+        """
         result_queue = self.stage_queues.get('results')
         if not result_queue:
             return
 
-        logger.info("[PIPELINE] Result collector started")
+        logger.info("[PIPELINE] Result collector started (metadata only)")
         while True:
             try:
                 # 阻塞直到有数据，超时用于检查退出条件
@@ -706,15 +710,24 @@ class StreamingPipelineOrchestrator:
                 if isinstance(batch, PipelineSignal):
                     if batch.signal_type == END_OF_STREAM:
                         logger.info(f"[PIPELINE] Received END_OF_STREAM signal in results: {batch}")
-                        # 只有收到明确的EOS信号才退出
                         break
                 elif batch is None:
                     # 兼容旧版本
                     logger.info("[PIPELINE] Received None signal in results")
                     break
                 else:
-                    # 正常数据
-                    results_list.append(batch)
+                    # ✅ 只收集轻量级元数据，不存完整数据
+                    metadata = {
+                        'batch_id': batch.batch_id,
+                        'item_count': len(batch.items),
+                        'successful_count': len([
+                            item for item in batch.items 
+                            if not item.metadata.get('error')
+                        ]),
+                        'stage': batch.metadata.get('stage'),
+                        'processed_at': batch.metadata.get('processed_at')
+                    }
+                    results_list.append(metadata)
                     
             except Empty:
                 # 队列暂时为空，继续等待
@@ -723,8 +736,8 @@ class StreamingPipelineOrchestrator:
                 logger.error(f"[PIPELINE] Error collecting results: {e}")
                 break
         
-        logger.info(f"[PIPELINE] Collected {len(results_list)} result batches")
-
+        logger.info(f"[PIPELINE] Collected metadata for {len(results_list)} batches")
+    
     def _monitor_progress(self, progress_callback: Optional[Callable]) -> None:
         """监控Pipeline进度"""
         last_update = time.time()
@@ -787,9 +800,14 @@ class StreamingPipelineOrchestrator:
                 break
     
     def _compute_stats(self,
-                      worker_stats: Dict[str, List[Dict]],
-                      results: List[BatchData]) -> Dict[str, Any]:
-        """计算Pipeline统计信息"""
+                    worker_stats: Dict[str, List[Dict]],
+                    results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """计算Pipeline统计信息
+        
+        Args:
+            worker_stats: 各Worker的处理统计
+            results: 结果元数据列表（不是完整批次）
+        """
         total_duration = time.time() - self.start_time
         
         # 统计每个阶段
@@ -806,19 +824,17 @@ class StreamingPipelineOrchestrator:
                 'num_workers': len(stats_list)
             }
         
-        # 统计结果
-        total_items = sum(len(batch.items) for batch in results)
-        successful_items = sum(
-            len([item for item in batch.items if not item.metadata.get('error')])
-            for batch in results
-        )
+        # ✅ 从元数据计算结果统计
+        total_batches = len(results)
+        total_items = sum(r['item_count'] for r in results)
+        successful_items = sum(r['successful_count'] for r in results)
         
         # 死信队列
         dead_letter_count = self.dead_letter_queue.qsize()
         
         return {
             'total_duration': total_duration,
-            'total_batches': len(results),
+            'total_batches': total_batches,
             'total_items': total_items,
             'successful_items': successful_items,
             'failed_items': total_items - successful_items,
@@ -827,6 +843,7 @@ class StreamingPipelineOrchestrator:
             'dead_letter_count': dead_letter_count,
             'stage_stats': stage_stats
         }
+    
     
     def _cleanup(self) -> None:
         """清理资源"""

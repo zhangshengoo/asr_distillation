@@ -27,14 +27,13 @@ from src.compute.inference import (
     BatchInferenceStage,
     PostProcessingStage
 )
-from src.storage.result_writer import ResultWriterStage
+from src.storage.result_writer import ResultWriterStage  # 保留导入
 from src.monitoring.system import MonitoringSystem
 
 
 # 全局变量
 pipeline_orchestrator = None
 monitoring_system = None
-result_writer = None
 shutdown_requested = False
 
 
@@ -64,7 +63,7 @@ async def run_pipeline(config_path: str,
                       max_batches: Optional[int] = None,
                       log_level: str = "INFO") -> None:
     """运行流式ASR蒸馏Pipeline"""
-    global pipeline_orchestrator, monitoring_system, result_writer
+    global pipeline_orchestrator, monitoring_system
     
     logger = setup_logging(log_level)
     
@@ -102,7 +101,7 @@ async def run_pipeline(config_path: str,
         }
         pipeline_orchestrator = StreamingPipelineOrchestrator(pipeline_config)
         
-        # 5. 配置Pipeline stages
+        # 5. 配置Pipeline stages (新增第9个Stage)
         enable_multimedia = config.media is not None
         stage_workers_config = config.pipeline.stage_workers
         
@@ -194,18 +193,25 @@ async def run_pipeline(config_path: str,
                     'writer': config.writer.__dict__,
                     'storage': config.data.storage
                 }
+            },
+            # ✅ 新增：第9个Stage - 结果写入
+            {
+                'type': 'cpu',  # 写入是IO密集型，用CPU即可
+                'class': ResultWriterStage,
+                'name': 'result_writer',
+                'num_workers': stage_workers_config.get('result_writer', 1),  # 通常1个即可
+                'config': {
+                    'writer': config.writer.__dict__,
+                    'storage': config.data.storage
+                }
             }
         ]
         
         pipeline_orchestrator.setup_multi_stage_pipeline(stages_config)
         
-        # 6. 初始化结果写入器
-        logger.info("Starting result writer...")
-        result_writer = ResultWriterStage({
-            'writer': config.writer.__dict__,
-            'storage': config.data.storage
-        })
-        await result_writer.start()
+        # 6. ❌ 移除：不再单独初始化 ResultWriter
+        # result_writer = ResultWriterStage({...})
+        # await result_writer.start()
         
         # 7. 进度回调
         def progress_callback(current: int, queue_stats: dict):
@@ -253,15 +259,13 @@ async def run_pipeline(config_path: str,
 
 async def cleanup(logger: logging.Logger):
     """清理资源"""
-    global pipeline_orchestrator, monitoring_system, result_writer
+    global pipeline_orchestrator, monitoring_system
     
     logger.info("Cleaning up resources...")
     
-    if result_writer:
-        try:
-            await result_writer.stop()
-        except Exception as e:
-            logger.error(f"Error stopping result writer: {e}")
+    # ❌ 移除：result_writer 清理
+    # if result_writer:
+    #     await result_writer.stop()
     
     if pipeline_orchestrator:
         try:
