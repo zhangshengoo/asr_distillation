@@ -198,7 +198,7 @@ async def run_pipeline(config_path: str,
             # 根据配置选择同步或异步版本
             {
                 'type': 'cpu',  # 写入是IO密集型，用CPU即可
-                'class': SyncResultWriterStage if config.writer.get('sync_mode', False) else ResultWriterStage,
+                'class': SyncResultWriterStage if getattr(config.writer, 'sync_mode', True) else ResultWriterStage,
                 'name': 'result_writer',
                 'num_workers': stage_workers_config.get('result_writer', 1),  # 通常1个即可
                 'config': {

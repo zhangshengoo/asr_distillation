@@ -140,6 +140,7 @@ class WriteConfig:
     async_upload: bool = True
     retry_attempts: int = 3
     retry_delay: float = 1.0
+    sync_mode: bool = True
 
 
 class ResultBuffer:
