@@ -2,18 +2,16 @@
 
 import os
 import time
-import asyncio
 import logging
 from typing import Dict, List, Any
 from dataclasses import dataclass
 
 import torch
 import numpy as np
-from vllm import SamplingParams, AsyncLLMEngine
-from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm import LLM, SamplingParams
 from transformers import Qwen3OmniMoeProcessor
 
-# Set environment variables for Qwen3-Omni
+# 抑制vLLM日志
 os.environ['VLLM_USE_V1'] = '0'
 os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
 os.environ["VLLM_LOGGING_LEVEL"] = "ERROR"
@@ -63,9 +61,6 @@ class AudioModelProcessor:
                       sample_rate: int,
                       prompt: str = "请将这段语音转换为纯文本。") -> Dict[str, Any]:
         """Prepare inputs for Qwen3-Omni model"""
-        # audio_features is already numpy array from SegmentItem.waveform
-        
-        # Create messages in Qwen3-Omni format
         messages = [
             {
                 "role": "user",
@@ -76,17 +71,14 @@ class AudioModelProcessor:
             }
         ]
         
-        # Apply chat template
         text = self.processor.apply_chat_template(
             messages, 
             tokenize=False, 
             add_generation_prompt=True
         )
         
-        # Process multimodal information
         audios, images, videos = process_mm_info(messages, use_audio_in_video=False)
         
-        # Prepare inputs for vLLM
         inputs = {
             'prompt': text, 
             'multi_modal_data': {}, 
@@ -103,105 +95,47 @@ class AudioModelProcessor:
         return inputs
 
 
-class VLLMInferenceEngine:
-    """vLLM-based async inference engine"""
-    
-    def __init__(self, config: InferenceConfig):
-        self.config = config
-        self.engine = self._setup_engine()
-        
-    def _setup_engine(self) -> AsyncLLMEngine:
-        """Setup vLLM async engine"""
-        engine_args = AsyncEngineArgs(
-            model=self.config.model_name,
-            tensor_parallel_size=self.config.tensor_parallel_size,
-            max_num_batched_tokens=self.config.max_num_batched_tokens,
-            max_model_len=self.config.max_model_len,
-            gpu_memory_utilization=self.config.gpu_memory_utilization,
-            trust_remote_code=self.config.trust_remote_code,
-            dtype=self.config.dtype
-        )
-        
-        return AsyncLLMEngine.from_engine_args(engine_args)
-    
-    async def generate_batch_async(self, 
-                                  batch_inputs: List[Dict[str, Any]],
-                                  sampling_params: SamplingParams = None) -> List[str]:
-        """Batch async inference - 唯一的公开接口
-        
-        Args:
-            batch_inputs: List of prepared inputs from AudioModelProcessor
-            sampling_params: Optional sampling parameters
-            
-        Returns:
-            List of transcription strings
-            
-        Raises:
-            Exception: Any error during inference
-        """
-        if sampling_params is None:
-            sampling_params = SamplingParams(
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                top_p=self.config.top_p,
-                repetition_penalty=self.config.repetition_penalty
-            )
-        
-        # Submit all requests to vLLM (continuous batching will handle them)
-        tasks = []
-        for i, inputs in enumerate(batch_inputs):
-            request_id = f"req_{int(time.time() * 1000000)}_{i}"
-            task = self._generate_single(inputs, sampling_params, request_id)
-            tasks.append(task)
-        
-        # Wait for all results (vLLM will batch internally)
-        results = await asyncio.gather(*tasks)
-        return results
-    
-    async def _generate_single(self,
-                               inputs: Dict[str, Any],
-                               sampling_params: SamplingParams,
-                               request_id: str) -> str:
-        """Internal method for single inference"""
-        final_output = None
-        
-        # inputs already contains: prompt, multi_modal_data, mm_processor_kwargs
-        async for request_output in self.engine.generate(
-            inputs,  # Pass the full inputs dict with multimodal data
-            sampling_params, 
-            request_id
-        ):
-            final_output = request_output.outputs[0].text
-        
-        return final_output if final_output else ""
-
-
 class BatchInferenceStage(PipelineStage):
-    """Batch inference stage with async support"""
+    """Batch inference stage with synchronous LLM"""
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.logger = logging.getLogger("BatchInferenceStage")
+        
+        # 运行时检测GPU
+        available_gpus = torch.cuda.device_count()
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', 'not_set')
+        if cuda_visible != 'not_set' or available_gpus > 0:
+            self.logger.info(f"GPU initialized: CUDA_VISIBLE_DEVICES={cuda_visible}, detected={available_gpus}")
+        
+        # 初始化配置
         self.inference_config = InferenceConfig(**config.get('inference', {}))
         
-        # Initialize components
-        self._inference_engine = None
+        # 初始化同步LLM
+        self.llm = LLM(
+            model=self.inference_config.model_name,
+            tensor_parallel_size=self.inference_config.tensor_parallel_size,
+            max_num_batched_tokens=self.inference_config.max_num_batched_tokens,
+            max_model_len=self.inference_config.max_model_len,
+            gpu_memory_utilization=self.inference_config.gpu_memory_utilization,
+            trust_remote_code=self.inference_config.trust_remote_code,
+            dtype=self.inference_config.dtype
+        )
+        
+        # 初始化采样参数
+        self.sampling_params = SamplingParams(
+            temperature=self.inference_config.temperature,
+            max_tokens=self.inference_config.max_tokens,
+            top_p=self.inference_config.top_p,
+            repetition_penalty=self.inference_config.repetition_penalty
+        )
+        
+        # 初始化音频处理器
         self.model_processor = AudioModelProcessor(self.inference_config)
         self.prompt_template = config.get('prompt_template', '请将这段语音转换为纯文本。')
-        
-        # For synchronous execution
-        self._sync_loop = None
-        
-    @property
-    def inference_engine(self):
-        """Lazy initialization of inference engine"""
-        if self._inference_engine is None:
-            self.logger.info(f"Initializing vLLM engine on loop: {asyncio.get_event_loop()}")
-            self._inference_engine = VLLMInferenceEngine(self.inference_config)
-        return self._inference_engine
-        
-    async def process_async(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
-        """Async processing method"""
+    
+    def process(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
+        """同步推理处理"""
         if not batch.items:
             return BatchData(
                 batch_id=batch.batch_id,
@@ -209,49 +143,45 @@ class BatchInferenceStage(PipelineStage):
                 metadata={**batch.metadata, 'stage': 'batch_inference'}
             )
         
-        # Filter out items with empty waveforms to prevent vLLM errors
+        # 过滤空waveform
         valid_items = []
         for item in batch.items:
             if item.waveform is None:
-                self.logger.warning(f"Skipping None waveform for {item.segment_id}")
                 continue
             if item.waveform.size == 0:
-                self.logger.warning(f"Skipping empty waveform for {item.segment_id}, shape={item.waveform.shape}")
                 continue
             valid_items.append(item)
         
         if not valid_items:
-            self.logger.warning(f"Batch {batch.batch_id} has no valid waveforms, skipping inference")
             return BatchData(
                 batch_id=batch.batch_id,
                 items=[],
                 metadata={**batch.metadata, 'stage': 'batch_inference', 'skipped_reason': 'all_empty_waveforms'}
             )
         
-        # Log if some items were filtered
-        if len(valid_items) < len(batch.items):
-            self.logger.warning(f"Filtered {len(batch.items) - len(valid_items)} items with empty waveforms from batch {batch.batch_id}")
-        
-        # Prepare batch inputs
+        # 准备batch inputs
         batch_inputs = []
         for item in valid_items:
-            # item.waveform is already numpy array from SegmentItem
             sample_rate = item.metadata.get('sample_rate', 16000)
-            
             inputs = self.model_processor.prepare_inputs(
-                item.waveform,  # Direct numpy array, no conversion needed
+                item.waveform,
                 sample_rate,
                 self.prompt_template
             )
             batch_inputs.append(inputs)
         
-        # Batch inference (errors will raise)
-        # Access inference_engine via property to trigger lazy init if needed
-        transcriptions = await self.inference_engine.generate_batch_async(batch_inputs)
+        # 同步batch推理
+        outputs = self.llm.generate(
+            [inp['prompt'] for inp in batch_inputs],
+            self.sampling_params,
+            use_tqdm=False
+        )
         
-        # Create InferenceItem objects
+        # 构造结果
         inference_items = []
-        for item, transcription in zip(valid_items, transcriptions):
+        for item, output in zip(valid_items, outputs):
+            transcription = output.outputs[0].text if output.outputs else ""
+            
             inference_item = InferenceItem(
                 file_id=item.file_id,
                 parent_file_id=item.parent_file_id,
@@ -274,22 +204,6 @@ class BatchInferenceStage(PipelineStage):
             items=inference_items,
             metadata={**batch.metadata, 'stage': 'batch_inference'}
         )
-    
-
-    def process(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
-        """Sync wrapper for compatibility with persistent loop"""
-        if self._sync_loop is None:
-            self._sync_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._sync_loop)
-            
-        return self._sync_loop.run_until_complete(self.process_async(batch))
-        
-    def cleanup(self):
-        """Cleanup resources"""
-        if self._sync_loop is not None:
-            self.logger.info("Closing persistent sync loop")
-            self._sync_loop.close()
-            self._sync_loop = None
 
 
 class PostProcessingStage(PipelineStage):
@@ -306,10 +220,8 @@ class PostProcessingStage(PipelineStage):
         
         for item in batch.items:
             try:
-                # Clean up transcription
                 cleaned_transcription = item.transcription.strip()
                 
-                # Format output
                 if self.output_format == 'json':
                     output = {
                         'file_id': item.file_id,
@@ -325,7 +237,6 @@ class PostProcessingStage(PipelineStage):
                         'text': cleaned_transcription
                     }
                 
-                # Create updated FileResultItem with output
                 updated_item = FileResultItem(
                     file_id=item.file_id,
                     transcription=cleaned_transcription,

@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import json
 from dataclasses import dataclass, field
 
@@ -13,125 +13,89 @@ import yaml
 @dataclass
 class DataConfig:
     """数据层配置 - 管理音频数据索引、缓存和存储"""
-    # 音频索引文件路径，用于存储音频文件元数据信息
     index_path: str = "./data/index"
-    
-    # 本地缓存目录，存储下载的音频文件以减少重复下载
     cache_dir: str = "./data/cache"
-    
-    # 本地缓存大小限制(GB)，超出后会自动清理旧文件
     cache_size_gb: float = 100.0
-    
-    # WebDataset输出目录，用于存储处理后的数据集分片
     webdataset_output_dir: str = "./data/webdataset"
-    
-    # WebDataset分片大小(MB)，控制每个分片文件的大小
     shard_size_mb: int = 100
-    
-    # 存储配置，包含OSS等云存储的连接参数
     storage: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class NodeGPUConfig:
+    """节点GPU配置"""
+    node_id: int
+    gpus: List[int]
+    workers: List[int]
+
+
+@dataclass
+class GPUAllocationConfig:
+    """GPU分配配置"""
+    strategy: str = "custom"
+    nodes: List[NodeGPUConfig] = field(default_factory=list)
 
 
 @dataclass
 class PipelineConfig:
     """流水线配置 - 控制分布式处理和资源分配"""
-    # CPU工作节点数量，负责音频预处理和特征提取
     num_cpu_workers: int = 10
-
-    # GPU工作节点数量，负责模型推理
     num_gpu_workers: int = 1
-
-    # CPU工作节点资源配置，每个节点的CPU核心数
     cpu_worker_resources: Dict[str, float] = field(default_factory=lambda: {"num_cpus": 1})
-
-    # GPU工作节点资源配置，包含CPU和GPU资源
     gpu_worker_resources: Dict[str, float] = field(default_factory=lambda: {"num_cpus": 1, "num_gpus": 1})
-
-    # 批处理大小，影响内存使用和处理效率
     batch_size: int = 32
-
-    # 最大并发批次数，控制并行处理能力
     max_concurrent_batches: int = 4
-
-    # Ray对象存储内存大小(字节)，用于节点间数据传输
-    object_store_memory: int = 1024 * 1024 * 1024  # 1GB
-
-    # 检查点间隔，每处理多少批次保存一次状态
+    object_store_memory: int = 1024 * 1024 * 1024
     checkpoint_interval: int = 1000
-
-    # 各阶段的Worker数量配置
     stage_workers: Dict[str, int] = field(default_factory=lambda: {
-        'audio_download': 8,        # IO密集型阶段
-        'audio_preprocessing': 6,   # CPU密集型阶段
-        'vad_processing': 4,        # 并行处理阶段
-        'segment_expansion': 4,     # 中等CPU需求
-        'feature_extraction': 6,    # 中等CPU需求
-        'batch_inference': 1,       # GPU密集型阶段
-        'segment_aggregation': 2,   # 轻量级处理
-        'post_processing': 2        # 轻量级处理
+        'audio_download': 8,
+        'audio_preprocessing': 6,
+        'vad_processing': 4,
+        'segment_expansion': 4,
+        'feature_extraction': 6,
+        'batch_inference': 1,
+        'segment_aggregation': 2,
+        'post_processing': 2,
+        'result_writer': 1
     })
-
-    # 新增流式处理配置
-    queue_max_size: int = 100  # 队列最大大小（背压控制）
-    worker_timeout: Optional[int] = None  # Worker超时时间（秒）
-    max_retries: int = 3  # 最大重试次数
-    checkpoint_dir: str = "./checkpoints"  # 检查点目录
-    enable_streaming: bool = True  # 启用流式处理
-    prefetch_batches: int = 10  # 预取批次数
+    queue_max_size: int = 100
+    worker_timeout: Optional[int] = None
+    max_retries: int = 3
+    checkpoint_dir: str = "./checkpoints"
+    enable_streaming: bool = True
+    prefetch_batches: int = 10
+    gpu_allocation: GPUAllocationConfig = field(default_factory=GPUAllocationConfig)
 
 
 @dataclass
 class MediaConfig:
     """多媒体处理配置 - 控制多种音视频格式的处理参数"""
-    # 音频转换目标参数
     target_sample_rate: int = 16000
     target_channels: int = 1
     target_format: str = "wav"
-    
-    # FFmpeg配置
     ffmpeg_num_workers: int = 4
     ffmpeg_timeout: int = 300
-    ffmpeg_quality: str = "high"  # low/medium/high
-    
-    # 缓存配置
+    ffmpeg_quality: str = "high"
     cache_enable: bool = True
     cache_max_size_gb: float = 50
     cache_ttl_hours: int = 24
-    
-    # 性能设置
-    chunk_size: int = 1024 * 1024  # 1MB chunks for large files
-    max_file_size_mb: int = 500  # Maximum file size to process
+    chunk_size: int = 1024 * 1024
+    max_file_size_mb: int = 500
 
 
 @dataclass
 class AudioConfig:
     """音频处理配置 - 控制音频预处理和特征提取参数"""
-    # 目标采样率(Hz)，所有音频将重采样到此频率
     target_sample_rate: int = 16000
-    
-    # 最大音频时长(秒)，超过此长度的音频将被截断
     max_duration: float = 30.0
-    
-    # 是否对音频进行归一化处理，调整音量到标准范围
     normalize: bool = True
-    
-    # 是否去除音频中的静音片段，可以提高识别准确率
     remove_silence: bool = False
-    
-    # 音频文件格式，支持wav、mp3、flac等格式
     audio_format: str = 'wav'
-    
-    # 特征提取配置，定义如何从音频中提取特征
     features: Dict[str, Any] = field(default_factory=lambda: {
-        # 特征类型，支持mel_spectrogram、mfcc、spectrogram等
         'feature_type': 'mel_spectrogram',
-        # 特征提取的采样率，通常与目标采样率相同
         'sample_rate': 16000,
-        # FFT窗口大小，影响频率分辨率
         'n_fft': 400,
-        # 跳跃长度，影响时间分辨率
         'hop_length': 160,
-        # Mel滤波器数量，影响特征维度
         'n_mels': 80
     })
 
@@ -139,50 +103,22 @@ class AudioConfig:
 @dataclass
 class InferenceConfig:
     """推理配置 - 控制Qwen3-Omni模型推理和生成参数"""
-    # 模型名称或路径，支持HuggingFace模型ID或本地路径
     model_name: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-    
-    # 张量并行度，将模型分割到多个GPU上
     tensor_parallel_size: int = 1
-    
-    # 最大批处理token数，影响内存使用和吞吐量
     max_num_batched_tokens: int = 8192
-    
-    # 最大模型长度(token数)，超过将被截断
     max_model_len: int = 32768
-    
-    # GPU内存利用率(0-1)，控制vLLM使用的GPU内存比例
     gpu_memory_utilization: float = 0.95
-    
-    # 是否信任远程代码，用于加载自定义模型
     trust_remote_code: bool = True
-    
-    # 数据类型，auto表示自动选择最佳类型
     dtype: str = "auto"
-    
-    # 生成温度，控制输出的随机性，值越小输出越确定
     temperature: float = 1e-2
-    
-    # 最大生成token数，限制输出长度
     max_tokens: int = 8192
-    
-    # Top-p采样参数，控制词汇选择的多样性
     top_p: float = 0.1
-    
-    # 重复惩罚系数，避免生成重复内容
     repetition_penalty: float = 1.1
-    
-    # 最大序列数，控制并发处理的序列数量
     max_num_seqs: int = 1
-    
-    # 每个提示的多模态限制，控制图像、视频、音频的数量
     limit_mm_per_prompt: Optional[Dict[str, int]] = None
-    
-    # 随机种子，确保结果可重现
     seed: int = 1234
     
     def __post_init__(self):
-        """初始化后处理，设置默认的多模态限制"""
         if self.limit_mm_per_prompt is None:
             self.limit_mm_per_prompt = {'image': 1, 'video': 3, 'audio': 3}
 
@@ -190,124 +126,56 @@ class InferenceConfig:
 @dataclass
 class WriterConfig:
     """写入配置 - 控制结果写入和存储参数"""
-    # 批写入大小，累积多少结果后写入文件
     batch_size: int = 1000
-    
-    # 刷新间隔(秒)，定期强制写入缓冲区内容
     flush_interval: float = 10.0
-    
-    # 最大文件大小(MB)，超过将创建新文件
     max_file_size_mb: int = 100
-    
-    # 输出格式，支持jsonl、parquet、json等
     output_format: str = 'jsonl'
-    
-    # 压缩格式，支持gzip、bz2等，None表示不压缩
     compression: Optional[str] = None
-    
-    # 是否异步上传，提高写入性能
     async_upload: bool = True
-    
-    # 重试次数，写入失败时的重试次数
     retry_attempts: int = 3
-    
-    # 重试延迟(秒)，每次重试的等待时间
     retry_delay: float = 1.0
 
 
 @dataclass
 class MonitoringConfig:
     """监控配置 - 控制系统监控和告警参数"""
-    # 是否启用Prometheus指标收集
     enable_prometheus: bool = True
-    
-    # Prometheus服务器端口，用于指标暴露
     prometheus_port: int = 8000
-    
-    # 指标收集间隔(秒)，控制监控数据更新频率
     metrics_interval: float = 5.0
-    
-    # 是否启用GPU监控，收集GPU利用率和内存信息
     enable_gpu_monitoring: bool = True
-    
-    # 是否启用Ray监控，收集分布式系统状态
     enable_ray_monitoring: bool = True
-    
-    # 监控检查点间隔，定期保存监控状态
     checkpoint_interval: int = 1000
-    
-    # 检查点目录，存储监控快照文件
     checkpoint_dir: str = "./checkpoints"
-    
-    # 告警规则列表，定义触发告警的条件
     alert_rules: list = field(default_factory=list)
 
 
 @dataclass
 class VADConfig:
     """VAD语音活动检测配置 - 控制语音活动检测参数"""
-    # VAD模型路径
     model_path: str = "silero_vad.onnx"
-    
-    # 采样率
     sampling_rate: int = 16000
-    
-    # 检测阈值 (0.0-1.0)
     threshold: float = 0.4
-    
-    # 最小语音时长(毫秒)
     min_speech_duration_ms: int = 1500
-    
-    # 最小静音时长(毫秒)
     min_silence_duration_ms: int = 1000
-    
-    # 语音填充(毫秒)
     speech_pad_ms: int = 100
-    
-    # VAD批处理大小
     batch_size: int = 32
-    
-    # 是否启用VAD缓存
     cache_enabled: bool = True
-    
-    # VAD缓存目录
     cache_dir: str = "./cache/vad"
-    
-    # VAD缓存最大大小(GB)
     cache_max_size_gb: float = 10.0
-    
-    # 缓存生存时间(小时)
     cache_ttl_hours: int = 24
-    
-    # VAD并行工作进程数
     parallel_workers: int = 8
 
 
 @dataclass
 class ASRDistillationConfig:
     """ASR蒸馏框架主配置类 - 整合所有子模块配置"""
-    # 数据层配置，管理音频数据索引、缓存和存储
     data: DataConfig = field(default_factory=DataConfig)
-    
-    # 流水线配置，控制分布式处理和资源分配
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
-    
-    # 多媒体处理配置，控制多种音视频格式的处理参数
     media: MediaConfig = field(default_factory=MediaConfig)
-    
-    # VAD语音活动检测配置
     vad: VADConfig = field(default_factory=VADConfig)
-    
-    # 音频处理配置，控制音频预处理和特征提取参数
     audio: AudioConfig = field(default_factory=AudioConfig)
-    
-    # 推理配置，控制模型推理和生成参数
     inference: InferenceConfig = field(default_factory=InferenceConfig)
-    
-    # 写入配置，控制结果写入和存储参数
     writer: WriterConfig = field(default_factory=WriterConfig)
-    
-    # 监控配置，控制系统监控和告警参数
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
 
 
@@ -315,42 +183,28 @@ class ConfigManager:
     """配置管理器 - 负责配置文件的加载、保存、验证和更新"""
     
     def __init__(self, config_path: Optional[str] = None):
-        """
-        初始化配置管理器
-        
-        Args:
-            config_path: 配置文件路径，如果为None则使用默认配置
-        """
         self.config_path = config_path
         self.config = None
         
     def load_config(self, config_path: Optional[str] = None) -> ASRDistillationConfig:
-        """
-        从YAML文件加载配置
-        
-        Args:
-            config_path: 配置文件路径，如果为None则使用初始化时设置的路径
-            
-        Returns:
-            ASRDistillationConfig: 加载的配置对象
-        """
+        """从YAML文件加载配置"""
         if config_path:
             self.config_path = config_path
             
         if self.config_path and Path(self.config_path).exists():
             try:
-                # 使用标准yaml库加载配置
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     config_dict = yaml.safe_load(f)
                 
-                # 创建默认配置对象
                 self.config = ASRDistillationConfig()
                 
-                # 手动更新配置项
                 if 'data' in config_dict:
                     self._update_dataclass(self.config.data, config_dict['data'])
                 if 'pipeline' in config_dict:
                     self._update_dataclass(self.config.pipeline, config_dict['pipeline'])
+                    # 处理GPU分配配置
+                    if 'gpu_allocation' in config_dict['pipeline']:
+                        self._load_gpu_allocation(config_dict['pipeline']['gpu_allocation'])
                 if 'media' in config_dict:
                     self._update_dataclass(self.config.media, config_dict['media'])
                 if 'vad' in config_dict:
@@ -364,142 +218,86 @@ class ConfigManager:
                 if 'monitoring' in config_dict:
                     self._update_dataclass(self.config.monitoring, config_dict['monitoring'])
                 
-                # logger.info(f"从 {self.config_path} 加载配置成功")
-                
             except Exception as e:
-                # logger.error(f"加载配置失败: {e}")
                 self.config = ASRDistillationConfig()
         else:
-            # 使用默认配置
             self.config = ASRDistillationConfig()
-            # logger.info("使用默认配置")
             
         return self.config
     
-    def _update_dataclass(self, dataclass_obj, update_dict):
-        """
-        更新数据类对象的属性
+    def _load_gpu_allocation(self, gpu_config: Dict[str, Any]) -> None:
+        """加载GPU分配配置"""
+        nodes = []
+        for node_dict in gpu_config.get('nodes', []):
+            nodes.append(NodeGPUConfig(**node_dict))
         
-        Args:
-            dataclass_obj: 数据类对象
-            update_dict: 更新字典
-        """
+        self.config.pipeline.gpu_allocation = GPUAllocationConfig(
+            strategy=gpu_config.get('strategy', 'custom'),
+            nodes=nodes
+        )
+    
+    def _update_dataclass(self, dataclass_obj, update_dict):
+        """更新数据类对象的属性"""
         for key, value in update_dict.items():
             if hasattr(dataclass_obj, key):
                 setattr(dataclass_obj, key, value)
     
     def save_config(self, config_path: str, config: Optional[ASRDistillationConfig] = None) -> None:
-        """
-        保存配置到YAML文件
-        
-        Args:
-            config_path: 保存路径
-            config: 要保存的配置对象，如果为None则使用当前配置
-        """
+        """保存配置到YAML文件"""
         if config is None:
             config = self.config
             
         if config is None:
             raise ValueError("没有可保存的配置")
         
-        # 转换为DictConfig
         dict_config = OmegaConf.structured(config)
-        
-        # 保存为YAML文件
         OmegaConf.save(dict_config, config_path)
     
     def get_config(self) -> ASRDistillationConfig:
-        """
-        获取当前配置
-        
-        Returns:
-            ASRDistillationConfig: 当前配置对象，如果未加载则自动加载
-        """
+        """获取当前配置"""
         if self.config is None:
             self.load_config()
         return self.config
     
     def update_config(self, updates: Dict[str, Any]) -> None:
-        """
-        更新配置
-        
-        Args:
-            updates: 要更新的配置项字典
-        """
+        """更新配置"""
         if self.config is None:
             self.load_config()
         
-        # 转换为DictConfig以便合并
         dict_config = OmegaConf.structured(self.config)
         update_config = OmegaConf.create(updates)
-        
-        # 合并配置
         merged_config = OmegaConf.merge(dict_config, update_config)
-        
-        # 转换回数据类
         self.config = OmegaConf.to_object(merged_config)
     
     def validate_config(self, config: Optional[ASRDistillationConfig] = None) -> bool:
-        """
-        验证配置的有效性
-        
-        Args:
-            config: 要验证的配置对象，如果为None则使用当前配置
-            
-        Returns:
-            bool: 验证是否通过
-        """
+        """验证配置的有效性"""
         if config is None:
             config = self.config
             
         if config is None:
-            # logger.error("没有可验证的配置")
             return False
             
         try:
-            # 验证关键参数
             if config.pipeline.num_cpu_workers <= 0:
-                # logger.error("CPU工作节点数必须为正数")
                 return False
-                
             if config.pipeline.num_gpu_workers <= 0:
-                # logger.error("GPU工作节点数必须为正数")
                 return False
-                
             if config.audio.target_sample_rate <= 0:
-                # logger.error("目标采样率必须为正数")
                 return False
-                
             if config.inference.model_name == "":
-                # logger.error("模型名称不能为空")
                 return False
-                
-            # logger.info("配置验证通过")
             return True
-            
         except Exception as e:
-            # logger.error(f"配置验证错误: {e}")
             return False
     
     def create_default_config_file(self, config_path: str) -> None:
-        """
-        创建默认配置文件
-        
-        Args:
-            config_path: 配置文件保存路径
-        """
+        """创建默认配置文件"""
         default_config = ASRDistillationConfig()
         self.save_config(config_path, default_config)
-        # logger.info(f"已创建默认配置文件: {config_path}")
 
 
 def create_sample_config() -> str:
-    """
-    创建示例配置文件内容
-    
-    Returns:
-        str: 示例配置的YAML格式字符串
-    """
+    """创建示例配置文件内容"""
     sample_config = """
 # ASR Distillation Configuration
 
@@ -512,7 +310,7 @@ data:
   
   storage:
     bucket: "your-bucket-name"
-    endpoint: "https://oss-cn-beijing.aliyuncs.com"  # 阿里云OSS endpoint
+    endpoint: "https://oss-cn-beijing.aliyuncs.com"
     access_key_id: "your-access-key-id"
     access_key_secret: "your-access-key-secret"
     audio_prefix: "audio/"
@@ -523,7 +321,7 @@ pipeline:
   num_gpu_workers: 1
   batch_size: 32
   max_concurrent_batches: 4
-  object_store_memory: 1073741824  # 1GB
+  object_store_memory: 1073741824
   checkpoint_interval: 1000
 
   cpu_worker_resources:
@@ -533,16 +331,15 @@ pipeline:
     num_cpus: 1
     num_gpus: 1
 
-  # Stage-specific worker count configuration
   stage_workers:
-    audio_download: 8        # IO-intensive stage
-    audio_preprocessing: 6   # CPU-intensive stage
-    vad_processing: 4        # Parallel processing stage
-    segment_expansion: 4     # Medium CPU requirement
-    feature_extraction: 6    # Medium CPU requirement
-    batch_inference: 1       # GPU-intensive stage
-    segment_aggregation: 2   # Lightweight processing
-    post_processing: 2       # Lightweight processing
+    audio_download: 8
+    audio_preprocessing: 6
+    vad_processing: 4
+    segment_expansion: 4
+    feature_extraction: 6
+    batch_inference: 1
+    segment_aggregation: 2
+    post_processing: 2
 
 audio:
   target_sample_rate: 16000

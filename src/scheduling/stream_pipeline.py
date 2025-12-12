@@ -7,7 +7,10 @@
 4. 动态调度：根据负载自动调整
 5. 监控集成：实时进度和性能指标
 """
+import os
+import logging
 
+logger = logging.getLogger(__name__)
 import time
 import pickle
 import asyncio
@@ -281,7 +284,19 @@ class StreamingPipelineWorker:
                  stage_name: str,
                  stage_class: type,
                  stage_config: Dict[str, Any],
+                 gpu_ids: Optional[List[int]] = None,  # 新增参数
                  max_retries: int = 3):
+        
+        # GPU绑定逻辑
+        if gpu_ids is not None:
+            gpu_str = ','.join(map(str, gpu_ids))
+            os.environ['CUDA_VISIBLE_DEVICES'] = gpu_str
+            
+            # 运行时检测GPU
+            import torch
+            detected = torch.cuda.device_count()
+            logger.info(f"[{worker_id}] GPU bound: {gpu_str}, detected={detected}")
+        
         self.worker_id = worker_id
         self.stage_name = stage_name
         self.stage = stage_class(stage_config)
@@ -293,9 +308,9 @@ class StreamingPipelineWorker:
         # 如果是异步Stage，创建事件循环
         self.loop = None
         if self.is_async_stage:
+            import asyncio
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-            logger.info(f"Worker {self.worker_id} initialized with async event loop")
         
         # 统计信息
         self.processed_count = 0
@@ -493,17 +508,8 @@ class StreamingPipelineOrchestrator:
             )
             logger.info("Ray initialized")
     
-    def setup_multi_stage_pipeline(self, stages_config: List[Dict[str, Any]]) -> None:
-        """设置多阶段流水线
-        
-        Args:
-            stages_config: List of stage configurations, each containing:
-                - type: 'cpu' or 'gpu'
-                - class: Stage class to instantiate
-                - config: Configuration dictionary for the stage
-                - name: Stage name for logging
-                - num_workers: Number of workers for this stage (optional)
-        """
+        def setup_multi_stage_pipeline(self, stages_config: List[Dict[str, Any]]) -> None:
+        """设置多阶段流水线"""
         logger.info(f"Setting up streaming pipeline with {len(stages_config)} stages")
         
         # 创建生产者
@@ -531,7 +537,7 @@ class StreamingPipelineOrchestrator:
                               if stage_type == 'cpu' 
                               else self.pipeline_config.num_gpu_workers)
             
-            # 创建阶段队列（背压控制）
+            # 创建阶段队列
             queue_size = self.pipeline_config.queue_max_size
             self.stage_queues[stage_name] = Queue(maxsize=queue_size)
             
@@ -544,27 +550,66 @@ class StreamingPipelineOrchestrator:
             if resource_config is None:
                 resource_config = {"num_cpus": 1} if stage_type == 'cpu' else {"num_cpus": 1, "num_gpus": 1}
             
-            for worker_idx in range(num_workers):
-                worker = StreamingPipelineWorker.options(**resource_config).remote(
-                    f"{stage_name}_worker_{worker_idx}",
-                    stage_name,
-                    stage_class,
-                    stage_params,
-                    self.pipeline_config.max_retries
-                )
-                workers.append(worker)
+            # 如果是batch_inference stage，使用GPU分配配置
+            if stage_name == 'batch_inference':
+                worker_gpu_map = self._build_worker_gpu_map(self.pipeline_config.gpu_allocation)
+                
+                for worker_idx in range(num_workers):
+                    gpu_ids = worker_gpu_map.get(worker_idx, None)
+                    
+                    worker = StreamingPipelineWorker.options(**resource_config).remote(
+                        f"{stage_name}_worker_{worker_idx}",
+                        stage_name,
+                        stage_class,
+                        stage_params,
+                        gpu_ids,  # 传递GPU ID
+                        self.pipeline_config.max_retries
+                    )
+                    workers.append(worker)
+            else:
+                # 非推理stage，无需GPU绑定
+                for worker_idx in range(num_workers):
+                    worker = StreamingPipelineWorker.options(**resource_config).remote(
+                        f"{stage_name}_worker_{worker_idx}",
+                        stage_name,
+                        stage_class,
+                        stage_params,
+                        None,  # 无GPU绑定
+                        self.pipeline_config.max_retries
+                    )
+                    workers.append(worker)
             
             self.stage_workers[stage_name] = workers
             
             logger.info(f"Setup stage '{stage_name}': {num_workers} {stage_type} workers, queue_size={queue_size}")
         
-        # 输出pipeline拓扑结构
+        # 输出pipeline拓扑
         stage_names = list(self.stage_queues.keys())
         topology = " -> ".join(stage_names)
         logger.info(f"[PIPELINE] Topology: PRODUCER -> {topology}")
         logger.info(f"[PIPELINE] Total workers: {sum(len(w) for w in self.stage_workers.values())}")
         
         logger.info("Streaming pipeline setup completed")
+    
+    def _build_worker_gpu_map(self, gpu_allocation) -> Dict[int, List[int]]:
+        """构建worker_id到gpu_ids的映射
+        
+        Args:
+            gpu_allocation: GPUAllocationConfig对象
+            
+        Returns:
+            Dict[worker_id, List[gpu_id]]
+        """
+        worker_gpu_map = {}
+        
+        if gpu_allocation.strategy == 'custom':
+            for node in gpu_allocation.nodes:
+                for worker_id, gpu_id in zip(node.workers, node.gpus):
+                    # 假设每个worker对应一张GPU（tensor_parallel_size=1）
+                    worker_gpu_map[worker_id] = [gpu_id]
+        
+        return worker_gpu_map
+    
     
     def run(self,
             max_batches: Optional[int] = None,
