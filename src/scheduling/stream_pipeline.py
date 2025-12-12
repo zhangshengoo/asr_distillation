@@ -83,7 +83,7 @@ class TerminationBarrier:
                     target_worker_count=self.downstream_worker_count
                 )
                 try:
-                    self.output_queue.put(signal, block=True, timeout=30)
+                    self.output_queue.put(signal, block=True) #timeout=30)
                 except Full:
                     logger.error(f"[BARRIER:{self.stage_name}] Failed to put END_OF_STREAM signal (Queue Full)")
                 except Exception as e:
@@ -226,7 +226,7 @@ class StreamingDataProducer:
                 
                 # 将batch放入队列（会阻塞直到队列有空间）
                 try:
-                    output_queue.put(batch, block=True, timeout=60)
+                    output_queue.put(batch, block=True) # timeout=60)
                     self.total_produced += 1
                     self.current_batch_idx = i + self.batch_size
                     batch_count += 1
@@ -346,7 +346,7 @@ class StreamingPipelineWorker:
             while True:
                 try:
                     # 从输入队列获取批次（带超时）
-                    batch = input_queue.get(block=True, timeout=10)
+                    batch = input_queue.get(block=True) # timeout=10)
                     
                     # 检查是否为PipelineSignal结束信号
                     if isinstance(batch, PipelineSignal):
@@ -412,7 +412,7 @@ class StreamingPipelineWorker:
                         # 放入输出队列（如果不是最后stage）
                         if not is_final_stage and output_queue is not None:
                             try:
-                                output_queue.put(result, block=True, timeout=300)
+                                output_queue.put(result, block=True,) #=300
                             except Full:
                                 logger.error(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] CRITICAL: Output queue FULL after 300s wait. Deadlock potential!")
                                 raise
@@ -508,7 +508,7 @@ class StreamingPipelineOrchestrator:
             )
             logger.info("Ray initialized")
     
-        def setup_multi_stage_pipeline(self, stages_config: List[Dict[str, Any]]) -> None:
+    def setup_multi_stage_pipeline(self, stages_config: List[Dict[str, Any]]) -> None:
         """设置多阶段流水线"""
         logger.info(f"Setting up streaming pipeline with {len(stages_config)} stages")
         
