@@ -187,7 +187,8 @@ class StreamingDataProducer:
             ]
             logger.info(f"[PRODUCER] Remaining records to process: {len(remaining_records)}")
             logger.info(f"[PRODUCER] Will send {num_downstream_workers} END_OF_STREAM signals when done")
-            
+            logger.info(f"[PRODUCER] current_batch_idx={self.current_batch_idx}, remaining_records={len(remaining_records)}, batch_size={self.batch_size}")
+            logger.info(f"[PRODUCER] range({self.current_batch_idx}, {len(remaining_records)}, {self.batch_size})")
             batch_count = 0
             checkpoint_interval = 100  # 每100个batch保存一次检查点
             
