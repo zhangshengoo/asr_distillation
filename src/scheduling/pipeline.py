@@ -37,7 +37,12 @@ class DataProducer:
         from src.data.storage import AudioStorageManager
         
         self.data_loader = DataLoader(data_loader_config)
-        self.storage_manager = AudioStorageManager(data_loader_config['storage'])
+        
+        # 使用分离的输入和输出存储配置
+        self.storage_manager = MediaStorageManager(
+            input_config=data_loader_config['input_storage'],
+            output_config=data_loader_config['output_storage']
+        )
         self.batch_size = batch_size
         self.processed_files = set()
         

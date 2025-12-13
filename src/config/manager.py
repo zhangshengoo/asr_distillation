@@ -28,8 +28,11 @@ class DataConfig:
     # WebDataset分片大小(MB)，控制每个分片文件的大小
     shard_size_mb: int = 100
     
-    # 存储配置，包含OSS等云存储的连接参数
-    storage: Dict[str, Any] = field(default_factory=dict)
+    # 输入存储配置，用于数据下载，包含OSS等云存储的连接参数
+    input_storage: Dict[str, Any] = field(default_factory=dict)
+    
+    # 输出存储配置，用于结果上传，包含OSS等云存储的连接参数
+    output_storage: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -554,12 +557,19 @@ data:
   webdataset_output_dir: "./data/webdataset"
   shard_size_mb: 100
   
-  storage:
-    bucket: "your-bucket-name"
+  input_storage:
+    bucket: "your-input-bucket-name"
     endpoint: "https://oss-cn-beijing.aliyuncs.com"  # 阿里云OSS endpoint
     access_key_id: "your-access-key-id"
     access_key_secret: "your-access-key-secret"
     audio_prefix: "audio/"
+    video_prefix: "video/"
+  
+  output_storage:
+    bucket: "your-output-bucket-name"
+    endpoint: "https://oss-cn-beijing.aliyuncs.com"  # 阿里云OSS endpoint
+    access_key_id: "your-access-key-id"
+    access_key_secret: "your-access-key-secret"
     result_prefix: "results/"
 
 pipeline:

@@ -115,7 +115,12 @@ class StreamingDataProducer:
         from src.data.storage import MediaStorageManager
         
         self.data_loader = MediaDataLoader(data_loader_config)
-        self.storage_manager = MediaStorageManager(data_loader_config['storage'])
+        
+        # 使用分离的输入和输出存储配置
+        self.storage_manager = MediaStorageManager(
+            input_config=data_loader_config['input_storage'],
+            output_config=data_loader_config['output_storage']
+        )
         self.batch_size = batch_size
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)

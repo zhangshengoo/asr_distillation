@@ -163,7 +163,11 @@ class AudioDownloadStage(PipelineStage):
         from ..data.media_indexer import MediaDataLoader
         
         self.logger = logging.getLogger("AudioDownloadStage")
-        self.storage_manager = MediaStorageManager(config['storage'])
+        # 使用分离的输入和输出存储配置
+        self.storage_manager = MediaStorageManager(
+            input_config=config['input_storage'],
+            output_config=config['output_storage']
+        )
         self.data_loader = MediaDataLoader(config['data'])
         
         # Initialize multimedia processing if enabled

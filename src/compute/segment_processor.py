@@ -55,7 +55,11 @@ class SegmentExpansionStage(PipelineStage):
             from src.data.storage import MediaStorageManager
             from src.storage.result_writer import AudioSegmentUploader, SegmentUploadConfig
             
-            storage_manager = MediaStorageManager(config['storage'])
+            # 使用分离的输入和输出存储配置 - segment上传使用输出存储
+            storage_manager = MediaStorageManager(
+                input_config=config['input_storage'],
+                output_config=config['output_storage']
+            )
             segment_config = SegmentUploadConfig(**config.get('segment_upload', {}))
             self.segment_uploader = AudioSegmentUploader(segment_config, storage_manager)
         

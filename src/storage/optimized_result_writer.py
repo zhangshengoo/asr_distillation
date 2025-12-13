@@ -283,8 +283,12 @@ class OptimizedResultWriterStage:
         )
         
         storage_manager = None
-        if 'storage' in config:
-            storage_manager = MediaStorageManager(config['storage'])
+        if 'output_storage' in config and 'input_storage' in config:
+            # 结果写入使用输出存储
+            storage_manager = MediaStorageManager(
+                input_config=config['input_storage'],
+                output_config=config['output_storage']
+            )
         
         worker_id = str(uuid.uuid4())[:8]
         

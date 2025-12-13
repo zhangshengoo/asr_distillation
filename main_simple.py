@@ -45,8 +45,12 @@ class SyncResultWriter:
         
         # Setup storage manager if configured
         self.storage_manager = None
-        if 'storage' in config:
-            self.storage_manager = AudioStorageManager(config['storage'])
+        if 'input_storage' in config and 'output_storage' in config:
+            # 使用分离的输入和输出存储配置
+            self.storage_manager = MediaStorageManager(
+                input_config=config['input_storage'],
+                output_config=config['output_storage']
+            )
             
         # Initialize async writer
         self.async_writer = AsyncResultWriter(writer_config, self.storage_manager)

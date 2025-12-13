@@ -31,7 +31,12 @@ class SimpleDataProducer:
         
         # 数据加载器和存储管理器
         self.data_loader = MediaDataLoader(data_config)
-        self.storage_manager = MediaStorageManager(data_config['storage'])
+        
+        # 使用分离的输入和输出存储配置
+        self.storage_manager = MediaStorageManager(
+            input_config=data_config['input_storage'],
+            output_config=data_config['output_storage']
+        )
         
         # 处理状态
         self.processed_file_ids: Set[str] = set()
