@@ -46,7 +46,8 @@ def format_speed(bytes_per_second: float) -> str:
 def test_connectivity(oss_client: OSSClient) -> bool:
     """测试OSS连通性"""
     try:
-        list(oss_client.bucket.list_objects(max_keys=1))
+        # 使用OSSClient封装的方法进行连通性测试
+        oss_client.list_objects(max_keys=1)
         return True
     except Exception as e:
         print(f"Connectivity failed: {e}")
