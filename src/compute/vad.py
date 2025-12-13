@@ -164,15 +164,15 @@ class VADProcessor:
         # 加载模型
         self.model_manager.load_model(config)
         
-        # VAD参数
+        # VAD参数 - 宽松策略，产生更长片段
         self.vad_params = {
             'sampling_rate': config.get('sampling_rate', 16000),
             'return_seconds': True,
-            'min_speech_duration_ms': config.get('min_speech_duration_ms', 1500),
-            'min_silence_duration_ms': config.get('min_silence_duration_ms', 1000),
-            'threshold': config.get('threshold', 0.4),
-            'neg_threshold': config.get('neg_threshold', 0.15),
-            'speech_pad_ms': config.get('speech_pad_ms', 100)
+            'min_speech_duration_ms': config.get('min_speech_duration_ms', 500),      # 保留短句
+            'min_silence_duration_ms': config.get('min_silence_duration_ms', 8000),   # 8秒静音才切分
+            'threshold': config.get('threshold', 0.25),                                # 低阈值
+            'neg_threshold': config.get('neg_threshold', 0.1),                         # 更低结束阈值
+            'speech_pad_ms': config.get('speech_pad_ms', 1000)                         # 两端1秒padding
         }
     
     def process_audio(self, file_id: str, audio_data: np.ndarray, 

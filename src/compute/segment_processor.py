@@ -10,13 +10,15 @@ import ray
 from src.scheduling.pipeline import PipelineStage
 from src.common import BatchData, TensorItem, SegmentItem, InferenceItem, FileResultItem
 
+import numpy as np
+
 
 class SegmentExpansionStage(PipelineStage):
     """音频片段展开阶段 - 将VAD结果展开为segment级别的items
     
     功能：
     1. 将文件级别的VAD结果展开为segment级别的items
-    2. 为每个segment添加完整的元数据
+    2. 智能切分超长片段（>178秒）：优先在静音处切分，否则等分
     3. 过滤无效的segments
     4. 保持与后续阶段的接口兼容性
     """
@@ -24,16 +26,179 @@ class SegmentExpansionStage(PipelineStage):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.logger = logging.getLogger("SegmentExpansionStage")
-        self.min_segment_duration = config.get('min_segment_duration', 0.1)  # 最小片段时长(秒)
-        self.preserve_order = config.get('preserve_order', True)  # 保持片段顺序
+        self.min_segment_duration = config.get('min_segment_duration', 0.5)
+        self.max_segment_duration = config.get('max_segment_duration', 178)      # 硬性上限
+        self.segment_threshold = config.get('segment_threshold', 120)            # 目标切分间隔
+        self.preserve_order = config.get('preserve_order', True)
+        
+        # ✅ 超长片段重新VAD的参数（更严格）
+        self.resplit_vad_params = {
+            'sampling_rate': config.get('sampling_rate', 16000),
+            'min_speech_duration_ms': config.get('resplit_min_speech_ms', 1500),
+            'min_silence_duration_ms': config.get('resplit_min_silence_ms', 300),   # 300ms静音即可切分
+            'threshold': config.get('resplit_threshold', 0.4),
+            'neg_threshold': config.get('resplit_neg_threshold', 0.15),
+            'speech_pad_ms': config.get('resplit_speech_pad_ms', 100),
+            'return_seconds': False  # 返回采样点索引
+        }
+        
+        # VAD模型（懒加载，仅在需要切分超长片段时使用）
+        self.vad_model = None
         
         # 统计信息
         self.stats = {
             'processed_files': 0,
             'total_segments': 0,
             'filtered_segments': 0,
+            'split_segments': 0,
+            'smart_split_count': 0,      # 智能切分（在静音处）
+            'forced_split_count': 0,      # 强制等分
             'processing_time': 0.0
         }
+    
+    def _ensure_vad_model(self):
+        """懒加载VAD模型（仅在需要重新切分时加载）"""
+        if self.vad_model is None:
+            from silero_vad import load_silero_vad
+            self.vad_model = load_silero_vad(onnx=False)
+            self.logger.info("Loaded VAD model for resplitting long segments")
+    
+    def _split_long_segment(self, segment_data, file_id: str) -> List:
+        """切分超长片段 - 参考Qwen3-ASR-Toolkit智能切分逻辑
+        
+        策略：
+        1. 用更严格的VAD重新检测，找到所有语音段起始点（静音位置）
+        2. 每隔segment_threshold秒，找最近的静音点切分
+        3. 如果仍超过max_segment_duration，强制等分
+        
+        Args:
+            segment_data: AudioSegment对象
+            file_id: 文件ID
+            
+        Returns:
+            切分后的AudioSegment列表
+        """
+        from src.compute.vad import AudioSegment
+        from silero_vad import get_speech_timestamps
+        
+        duration = segment_data.duration
+        sample_rate = segment_data.sample_rate
+        audio_data = segment_data.audio_data
+        total_samples = len(audio_data)
+        
+        # 不需要切分
+        if duration <= self.max_segment_duration:
+            return [segment_data]
+        
+        # ✅ Step 1: 用更严格的VAD重新检测，找到所有潜在切分点
+        self._ensure_vad_model()
+        
+        try:
+            speech_timestamps = get_speech_timestamps(
+                audio_data,
+                self.vad_model,
+                **self.resplit_vad_params
+            )
+            
+            if not speech_timestamps:
+                raise ValueError("No speech detected in resplit VAD")
+            
+            # 收集所有语音段的起始点（静音后的位置，适合切分）
+            potential_split_points = {0, total_samples}
+            for ts in speech_timestamps:
+                potential_split_points.add(ts['start'])
+            
+            sorted_splits = sorted(list(potential_split_points))
+            
+            # ✅ Step 2: 按segment_threshold间隔寻找最近的切分点
+            segment_threshold_samples = int(self.segment_threshold * sample_rate)
+            final_split_points = {0, total_samples}
+            
+            target_time = segment_threshold_samples
+            while target_time < total_samples:
+                # 找到最接近目标时间的VAD切分点
+                closest_point = min(sorted_splits, key=lambda p: abs(p - target_time))
+                final_split_points.add(closest_point)
+                target_time += segment_threshold_samples
+            
+            final_ordered_splits = sorted(list(final_split_points))
+            
+            # ✅ Step 3: 硬性保护 - 确保每段不超过max_segment_duration
+            max_segment_samples = int(self.max_segment_duration * sample_rate)
+            new_split_points = [0]
+            
+            for i in range(1, len(final_ordered_splits)):
+                start = final_ordered_splits[i - 1]
+                end = final_ordered_splits[i]
+                segment_length = end - start
+                
+                if segment_length <= max_segment_samples:
+                    new_split_points.append(end)
+                else:
+                    # 仍然超过最大限制，强制等分
+                    num_subsegments = int(np.ceil(segment_length / max_segment_samples))
+                    subsegment_length = segment_length / num_subsegments
+                    
+                    for j in range(1, num_subsegments):
+                        split_point = int(start + j * subsegment_length)
+                        new_split_points.append(split_point)
+                    
+                    new_split_points.append(end)
+                    self.stats['forced_split_count'] += 1
+            
+            self.stats['smart_split_count'] += 1
+            self.logger.debug(
+                f"Smart split: segment {segment_data.segment_id} ({duration:.1f}s) "
+                f"-> {len(new_split_points)-1} parts using VAD-detected split points"
+            )
+            
+        except Exception as e:
+            # VAD检测失败，回退到等分策略
+            self.logger.warning(
+                f"VAD resplit failed for segment {segment_data.segment_id}: {e}, "
+                f"using equal split fallback"
+            )
+            max_segment_samples = int(self.max_segment_duration * sample_rate)
+            num_subsegments = int(np.ceil(total_samples / max_segment_samples))
+            subsegment_length = total_samples / num_subsegments
+            
+            new_split_points = [int(i * subsegment_length) for i in range(num_subsegments + 1)]
+            new_split_points[-1] = total_samples
+            self.stats['forced_split_count'] += 1
+        
+        # ✅ Step 4: 根据切分点创建子片段
+        sub_segments = []
+        for i in range(len(new_split_points) - 1):
+            start_sample = new_split_points[i]
+            end_sample = new_split_points[i + 1]
+            
+            # 计算时间范围
+            chunk_start_time = segment_data.start_time + (start_sample / sample_rate)
+            chunk_end_time = segment_data.start_time + (end_sample / sample_rate)
+            chunk_duration = chunk_end_time - chunk_start_time
+            
+            # 提取音频数据
+            chunk_audio = audio_data[start_sample:end_sample]
+            
+            # 创建子片段
+            sub_segment = AudioSegment(
+                file_id=file_id,
+                segment_id=f"{segment_data.segment_id}_part{i}",
+                audio_data=chunk_audio,
+                start_time=chunk_start_time,
+                end_time=chunk_end_time,
+                duration=chunk_duration,
+                sample_rate=sample_rate,
+                original_duration=segment_data.original_duration
+            )
+            sub_segments.append(sub_segment)
+        
+        self.logger.info(
+            f"Split long segment {segment_data.segment_id} ({duration:.1f}s) "
+            f"into {len(sub_segments)} parts (avg: {duration/len(sub_segments):.1f}s each)"
+        )
+        
+        return sub_segments
     
     def process(self, batch: BatchData[TensorItem]) -> BatchData[SegmentItem]:
         """处理批次数据，展开为segment级别"""
@@ -65,8 +230,24 @@ class SegmentExpansionStage(PipelineStage):
             if not segments_data:
                 return []
             
+            # 处理每个segment（过滤 + 切分超长）
+            processed_segments = []
+            for segment_data in segments_data:
+                # 过滤过短片段
+                if segment_data.duration < self.min_segment_duration:
+                    self.stats['filtered_segments'] += 1
+                    continue
+                
+                # ✅ 处理超长片段（智能切分）
+                if segment_data.duration > self.max_segment_duration:
+                    sub_segments = self._split_long_segment(segment_data, item.file_id)
+                    processed_segments.extend(sub_segments)
+                    self.stats['split_segments'] += 1
+                else:
+                    processed_segments.append(segment_data)
+            
             # 过滤并创建SegmentItem列表
-            valid_segments = self._filter_segments(segments_data)
+            valid_segments = self._filter_segments(processed_segments)
             segment_items = []
             
             for idx, segment_data in enumerate(valid_segments):
@@ -88,9 +269,9 @@ class SegmentExpansionStage(PipelineStage):
                     }
                 )
                 segment_items.append(segment_item)
-                
-            self.stats['filtered_segments'] += len(segments_data) - len(valid_segments)
+            
             return segment_items
+            
         except Exception as e:
             self.logger.error(f"Failed to expand item {item.file_id}: {e}")
             return []
@@ -102,7 +283,7 @@ class SegmentExpansionStage(PipelineStage):
         for segment in segments:
             duration = getattr(segment, 'duration', 0)
             
-            # 检查时长范围 - 只过滤过短的segment
+            # 检查时长范围
             if duration < self.min_segment_duration:
                 continue
             
@@ -112,11 +293,11 @@ class SegmentExpansionStage(PipelineStage):
             
             # 检查音频数据是否为空数组
             if hasattr(segment.audio_data, '__len__') and len(segment.audio_data) == 0:
-                continue  # 空音频数据，跳过该segment
+                continue
             
             valid_segments.append(segment)
         
-        # 保持顺序（如果需要）
+        # 保持顺序
         if self.preserve_order:
             valid_segments.sort(key=lambda s: getattr(s, 'start_time', 0))
         
@@ -131,8 +312,11 @@ class SegmentExpansionStage(PipelineStage):
             stats['avg_processing_time'] = stats['processing_time'] / stats['processed_files']
             stats['filter_rate'] = stats['filtered_segments'] / stats['total_segments'] if stats['total_segments'] > 0 else 0
         
+        if stats['split_segments'] > 0:
+            stats['smart_split_ratio'] = stats['smart_split_count'] / stats['split_segments']
+            stats['forced_split_ratio'] = stats['forced_split_count'] / stats['split_segments']
+        
         return stats
-
 
 class SegmentAggregationStage(PipelineStage):
     """音频片段聚合阶段 - 将segment级别的结果聚合到文件级别

@@ -1,18 +1,16 @@
-# ASR Distillation Configuration
-
 data:
   index_path: "./data/index"
   cache_dir: "./data/cache"
   cache_size_gb: 100.0
   webdataset_output_dir: "./data/webdataset"
   shard_size_mb: 100
-  
   storage:
     bucket: "your-bucket-name"
-    endpoint: "https://oss-cn-beijing.aliyuncs.com"  # 阿里云OSS endpoint
+    endpoint: "https://oss-cn-beijing.aliyuncs.com"
     access_key_id: "your-access-key-id"
     access_key_secret: "your-access-key-secret"
     audio_prefix: "audio/"
+    video_prefix: "video/"
     result_prefix: "results/"
 
 pipeline:
@@ -20,48 +18,75 @@ pipeline:
   num_gpu_workers: 1
   batch_size: 32
   max_concurrent_batches: 4
-  object_store_memory: 1073741824  # 1GB
+  object_store_memory: 1073741824
   checkpoint_interval: 1000
-  
+  # checkpoint_dir: "./checkpoints"
+  # enable_streaming: true
+  # prefetch_batches: 10
+  # queue_max_size: 100
+  # worker_timeout: null
+  # max_retries: 3
   cpu_worker_resources:
     num_cpus: 1
-
   gpu_worker_resources:
     num_cpus: 1
     num_gpus: 1
-
-  # Stage-specific worker count configuration
   stage_workers:
-    audio_download: 8        # IO-intensive stage
-    audio_preprocessing: 6   # CPU-intensive stage
-    vad_processing: 4        # Parallel processing stage
-    segment_expansion: 4     # Medium CPU requirement
-    feature_extraction: 6    # Medium CPU requirement
-    batch_inference: 1       # GPU-intensive stage
-    segment_aggregation: 2   # Lightweight processing
-    post_processing: 2       # Lightweight processing
+    audio_download: 8
+    audio_preprocessing: 6
+    vad_processing: 4
+    segment_expansion: 4
+    feature_extraction: 6
+    batch_inference: 1
+    segment_aggregation: 2
+    post_processing: 2
     result_writer: 1
+  gpu_allocation:
+    strategy: "custom"
+    nodes:
+      - node_id: 0
+        gpus: [0]
+        workers: [0]
 
-# 多媒体处理配置
 media:
-  # 音频转换目标参数
   target_sample_rate: 16000
   target_channels: 1
   target_format: "wav"
-  
-  # FFmpeg配置
-  ffmpeg_num_workers: 4  # 并行转换进程数
-  ffmpeg_timeout: 300    # 转换超时时间(秒)
-  ffmpeg_quality: "high" # 转换质量: low/medium/high
-  
-  # 缓存配置
+  ffmpeg_num_workers: 4
+  ffmpeg_timeout: 300
+  ffmpeg_quality: "high"
   cache_enable: true
   cache_max_size_gb: 50
   cache_ttl_hours: 24
-  
-  # 性能设置
-  chunk_size: 1048576  # 1MB chunks for large files
-  max_file_size_mb: 500  # Maximum file size to process
+  chunk_size: 1048576
+  max_file_size_mb: 500
+
+vad:
+  model_path: "silero_vad.onnx"
+  sampling_rate: 16000
+  threshold: 0.25
+  neg_threshold: 0.1
+  min_speech_duration_ms: 500
+  min_silence_duration_ms: 8000
+  speech_pad_ms: 1000
+  batch_size: 32
+  cache_enabled: true
+  cache_dir: "./cache/vad"
+  cache_max_size_gb: 10.0
+  cache_ttl_hours: 24
+  parallel_workers: 8
+
+segment_expansion:
+  min_segment_duration: 0.5
+  max_segment_duration: 178
+  segment_threshold: 120
+  preserve_order: true
+  sampling_rate: 16000
+  resplit_min_speech_ms: 1500
+  resplit_min_silence_ms: 300
+  resplit_threshold: 0.4
+  resplit_neg_threshold: 0.15
+  resplit_speech_pad_ms: 100
 
 audio:
   target_sample_rate: 16000
@@ -69,28 +94,12 @@ audio:
   normalize: true
   remove_silence: false
   audio_format: "wav"
-  
   features:
     feature_type: "mel_spectrogram"
     sample_rate: 16000
     n_fft: 400
     hop_length: 160
     n_mels: 80
-
-# VAD语音活动检测配置
-vad:
-  model_path: "silero_vad.onnx"
-  sampling_rate: 16000
-  threshold: 0.4
-  min_speech_duration_ms: 1500
-  min_silence_duration_ms: 1000
-  speech_pad_ms: 100
-  batch_size: 32
-  cache_enabled: true
-  cache_dir: "./cache/vad"
-  cache_max_size_gb: 10.0
-  cache_ttl_hours: 24
-  parallel_workers: 8
 
 inference:
   model_name: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
@@ -105,11 +114,11 @@ inference:
   top_p: 0.1
   repetition_penalty: 1.1
   max_num_seqs: 1
+  seed: 1234
   limit_mm_per_prompt:
     image: 1
     video: 3
     audio: 3
-  seed: 1234
 
 writer:
   batch_size: 1000
@@ -120,14 +129,12 @@ writer:
   async_upload: true
   retry_attempts: 3
   retry_delay: 1.0
-  #sync_mode: true  # 同步模式，默认为false（异步），设置为true可使用同步版本
-  # ✅ 新增优化参数
-  buffer_size_mb: 10.0           # 初始buffer大小
-  max_buffer_size_mb: 50.0       # 最大buffer
-  min_buffer_size_mb: 5.0        # 最小buffer
-  multipart_threshold_mb: 100    # 分片上传阈值
-  part_size_mb: 10               # 分片大小
-  max_concurrent_parts: 4        # 分片并发度
+  buffer_size_mb: 10.0
+  max_buffer_size_mb: 50.0
+  min_buffer_size_mb: 5.0
+  multipart_threshold_mb: 100
+  part_size_mb: 10
+  max_concurrent_parts: 4
 
 monitoring:
   enable_prometheus: true
@@ -137,7 +144,6 @@ monitoring:
   enable_ray_monitoring: true
   checkpoint_interval: 1000
   checkpoint_dir: "./checkpoints"
-  
   alert_rules:
     - name: "high_error_rate"
       severity: "warning"
@@ -147,7 +153,6 @@ monitoring:
         metric: "stages.inference.success_rate"
         threshold: 0.9
         operator: "<"
-    
     - name: "high_memory_usage"
       severity: "critical"
       message: "High memory usage"
@@ -156,3 +161,7 @@ monitoring:
         metric: "system.memory_percent"
         threshold: 90
         operator: ">"
+
+prompt_template: "请将这段语音转换为纯文本。"
+output_dir: "./results"
+enable_multimedia: true
