@@ -130,7 +130,14 @@ def run_tests(config_path: str, test_size_mb: float = 10.0):
     
     # 加载配置
     config = load_config(config_path)
-    storage_config = config['data']['storage']
+    
+    # 检查使用新配置还是旧配置
+    if 'input_storage' in config['data']:
+        # 新配置格式
+        storage_config = config['data']['input_storage']  # 使用输入存储进行测试
+    else:
+        # 旧配置格式（向后兼容）
+        storage_config = config['data']['storage']
     
     print(f"Endpoint: {storage_config['endpoint']}")
     print(f"Bucket: {storage_config['bucket']}\n")
@@ -143,7 +150,11 @@ def run_tests(config_path: str, test_size_mb: float = 10.0):
             access_key_secret=storage_config['access_key_secret'],
             bucket_name=storage_config['bucket']
         )
-        storage_manager = MediaStorageManager(storage_config)
+        # 使用分离的存储配置
+        storage_manager = MediaStorageManager(
+            input_config=storage_config,
+            output_config=storage_config  # 对于测试，使用相同的配置
+        )
     except Exception as e:
         print(f"Failed to initialize OSS client: {e}")
         return
