@@ -88,6 +88,21 @@ segment_expansion:
   resplit_neg_threshold: 0.15
   resplit_speech_pad_ms: 100
 
+segment_upload:
+  enable_segment_upload: false
+  audio_segment_prefix: "audio_segments/"
+  metadata_prefix: "segment_metadata/"
+  audio_format: "wav"
+  segment_metadata_batch_size: 1000
+  buffer_size_mb: 10.0
+  max_buffer_size_mb: 50.0
+  multipart_threshold_mb: 100
+  part_size_mb: 10
+  max_concurrent_parts: 4
+  output_format: 'jsonl'
+  retry_attempts: 3
+  retry_delay: 1.0
+
 audio:
   target_sample_rate: 16000
   max_duration: 30.0

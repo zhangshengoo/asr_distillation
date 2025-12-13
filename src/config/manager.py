@@ -309,6 +309,9 @@ class ASRDistillationConfig:
     
     # 监控配置，控制系统监控和告警参数
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    
+    # Segment上传配置，控制音频片段上传参数
+    segment_upload: Dict[str, Any] = field(default_factory=dict)
 
 
 class ConfigManager:
@@ -363,6 +366,8 @@ class ConfigManager:
                     self._update_dataclass(self.config.writer, config_dict['writer'])
                 if 'monitoring' in config_dict:
                     self._update_dataclass(self.config.monitoring, config_dict['monitoring'])
+                if 'segment_upload' in config_dict:
+                    self.config.segment_upload = config_dict['segment_upload']
                 
                 # logger.info(f"从 {self.config_path} 加载配置成功")
                 
@@ -584,6 +589,33 @@ writer:
   output_format: "jsonl"
   compression: null
   async_upload: true
+  retry_attempts: 3
+  retry_delay: 1.0
+
+segment_expansion:
+  min_segment_duration: 0.5
+  max_segment_duration: 178
+  segment_threshold: 120
+  preserve_order: true
+  sampling_rate: 16000
+  resplit_min_speech_ms: 1500
+  resplit_min_silence_ms: 300
+  resplit_threshold: 0.4
+  resplit_neg_threshold: 0.15
+  resplit_speech_pad_ms: 100
+
+segment_upload:
+  enable_segment_upload: false
+  audio_segment_prefix: "audio_segments/"
+  metadata_prefix: "segment_metadata/"
+  audio_format: "wav"
+  segment_metadata_batch_size: 1000
+  buffer_size_mb: 10.0
+  max_buffer_size_mb: 50.0
+  multipart_threshold_mb: 100
+  part_size_mb: 10
+  max_concurrent_parts: 4
+  output_format: 'jsonl'
   retry_attempts: 3
   retry_delay: 1.0
 

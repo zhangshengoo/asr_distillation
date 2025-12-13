@@ -31,6 +31,10 @@
 - **批处理推理优化**: 优化GPU利用率，支持连续批处理
 - **Qwen3-Omni集成**: 集成最新的Qwen3-Omni多模态模型
 - **阶段化Worker配置**: 支持为每个阶段独立配置Worker数量
+- **简化版Pipeline**: 新增`main_simple.py`，提供无Ray的串行处理模式，便于调试
+- **优化结果写入器**: 新增`OptimizedResultWriterStage`，提升写入性能
+- **增强的配置系统**: 支持更细粒度的GPU资源分配和监控告警规则
+- **改进的多媒体处理**: 增强对多种音视频格式的支持和处理能力
 
 ### 核心技术栈
 - **Python 3.9+**
@@ -55,6 +59,7 @@
 asr_distillation/
 ├── main.py                    # 主入口文件，CLI命令定义
 ├── main_stream.py             # 流式处理主程序，支持千万级数据处理
+├── main_simple.py             # 简化版主程序，无Ray串行处理，便于调试
 ├── config.yaml               # 配置文件模板
 ├── pyproject.toml            # 项目依赖和配置
 ├── requirements.txt          # Python依赖列表
@@ -62,14 +67,23 @@ asr_distillation/
 ├── Design.md                 # 架构设计文档
 ├── IFLOW.md                  # iFlow CLI上下文文档
 ├── Note.md                   # 问题记录和开发笔记
-├── fixCode.md                # Bug修复记录
+├── BATCH_DATA_DESIGN.md      # 批处理数据设计文档
+├── CLAUDE.md                 # AI助手交互文档
+├── PROJECT_SUMMARY.md        # 项目总结文档
+├── verify_changes.py         # 变更验证脚本
+├── docs/                     # 文档目录
+│   └── stream_pipeline.md    # 流式Pipeline设计文档
 ├── src/                      # 源代码目录
 │   ├── __init__.py
 │   ├── common.py             # 公共模块，包含DataBatch等共享类
+│   ├── simple_pipeline.py    # 简化版串行Pipeline实现
+│   ├── simple_producer.py    # 简化版数据生产者
+│   ├── simple_writer.py      # 简化版结果写入器
 │   ├── compute/              # 计算层
 │   │   ├── __init__.py
 │   │   ├── audio_processor.py    # CPU音频预处理
 │   │   ├── inference.py          # GPU推理引擎
+│   │   ├── inference_utils.py    # 推理工具函数
 │   │   ├── segment_processor.py  # 音频片段处理
 │   │   ├── vad_stage.py          # VAD处理阶段
 │   │   ├── vad.py                # VAD处理器核心实现
@@ -94,15 +108,17 @@ asr_distillation/
 │   │   └── stream_pipeline.py    # 流式分布式流水线，支持千万级数据处理
 │   └── storage/              # 存储层
 │       ├── __init__.py
-│       └── result_writer.py      # 异步结果写入
+│       ├── result_writer.py      # 异步结果写入
+│       └── optimized_result_writer.py # 优化版结果写入器
 ├── examples/                 # 示例代码
 │   ├── model_examples/       # 模型示例代码
 │   │   └── qwen3_omni.py     # Qwen3-Omni模型示例
 │   └── tool_examples/        # 工具示例代码
 │       └── vad.py            # Silero VAD语音活动检测示例
-├── scripts/                 # 辅助脚本
-│   └── run.sh               # 增强型运行脚本
-├── tests/                   # 测试目录
+├── scripts/                  # 辅助脚本
+│   ├── run.sh                # 增强型运行脚本
+│   └── vad.py                # VAD处理脚本
+├── tests/                    # 测试目录
 │   ├── compute/             # 计算层测试
 │   │   ├── test_audio_processor.py
 │   │   ├── test_batch_inference.py
@@ -158,6 +174,8 @@ asr_distillation/
   - AudioInferenceStage: 音频推理
   - BatchInferenceStage: 批量推理
   - PostProcessingStage: 后处理
+- **InferenceUtils**: 推理工具函数
+  - 提供推理相关的辅助函数
 - **ASR Models**: Qwen3-Omni多模态模型实现
   - 支持模型注册和动态加载
   - 统一的模型接口和配置
@@ -198,6 +216,13 @@ asr_distillation/
   - CPU/GPU异构资源调度
   - 自动背压和流量控制
   - 断点续传和容错恢复
+- **SimplePipeline**: 简化版串行Pipeline
+  - 无并发，易于调试
+  - 串行处理，稳定可靠
+- **SimpleDataProducer**: 简化版数据生产者
+  - 用于简化Pipeline的数据输入
+- **SimpleResultWriter**: 简化版结果写入器
+  - 用于简化Pipeline的结果输出
 - **核心调度特性**:
   - **多阶段流水线**: 支持任意数量的顺序处理阶段，每个阶段可独立配置Worker数量
   - **异构计算**: CPU和GPU工作节点独立管理，优化资源利用率
@@ -209,12 +234,14 @@ asr_distillation/
   - **Ray初始化优化**: 通过诊断测试确保Ray与监控系统的兼容性
   - **流式处理**: 支持千万级数据的流式处理，避免一次性加载所有数据
   - **队列背压**: 实现队列背压控制，防止内存溢出
+  - **简化模式**: 提供无Ray的串行处理模式，便于调试和小规模处理
 
 ### 4. 存储层 (src/storage/)
 - **AsyncResultWriter**: 异步结果写入，支持批量聚合
 - **BatchResultAggregator**: 批量结果聚合，优化存储IO
 - **ResultBuffer**: 线程安全的结果缓冲区
 - **WriteConfig**: 写入配置管理
+- **OptimizedResultWriterStage**: 优化版结果写入器，提升写入性能
 
 ### 5. 监控层 (src/monitoring/)
 - **MonitoringSystem**: Prometheus指标收集
@@ -266,6 +293,8 @@ asr_distillation/
 python main.py create-config --output my_config.yaml
 # 或使用流式处理
 python main_stream.py create-config --output my_config.yaml
+# 或使用简化版
+python main_simple.py create-config --output my_config.yaml
 # 或使用脚本
 ./scripts/run.sh -a create-config -o my_config.yaml
 ```
@@ -276,6 +305,8 @@ python main_stream.py create-config --output my_config.yaml
 python main.py run --config my_config.yaml
 # 流式处理（推荐用于大规模数据）
 python main_stream.py run --config my_config.yaml
+# 简化版处理（无Ray，用于调试）
+python main_simple.py run --config my_config.yaml
 # 或使用脚本
 ./scripts/run.sh -c my_config.yaml
 ```
@@ -285,6 +316,8 @@ python main_stream.py run --config my_config.yaml
 python main.py run --config my_config.yaml --max-batches 100
 # 流式处理
 python main_stream.py run --config my_config.yaml --max-batches 100
+# 简化版处理
+python main_simple.py run --config my_config.yaml --max-batches 100
 # 或使用脚本
 ./scripts/run.sh -c my_config.yaml -b 100
 ```
@@ -294,16 +327,23 @@ python main_stream.py run --config my_config.yaml --max-batches 100
 python main_stream.py status --checkpoint-dir ./checkpoints
 ```
 
-### 5. 指定日志级别
+### 5. 查看简化版处理状态
+```bash
+python main_simple.py status --checkpoint-dir ./checkpoints
+```
+
+### 6. 指定日志级别
 ```bash
 python main.py run --config my_config.yaml --log-level DEBUG
 # 流式处理
 python main_stream.py run --config my_config.yaml --log-level DEBUG
+# 简化版处理
+python main_simple.py run --config my_config.yaml --log-level DEBUG
 # 或使用脚本
 ./scripts/run.sh -c my_config.yaml -l DEBUG
 ```
 
-### 6. 使用增强型运行脚本
+### 7. 使用增强型运行脚本
 ```bash
 # 显示帮助信息
 ./scripts/run.sh --help
@@ -318,7 +358,7 @@ python main_stream.py run --config my_config.yaml --log-level DEBUG
 ./scripts/run.sh -a create-config -o new_config.yaml
 ```
 
-### 7. 运行测试
+### 8. 运行测试
 ```bash
 # 使用测试运行脚本
 python tests/run_tests.py
@@ -375,6 +415,10 @@ python tests/scheduling/test_ray_init.py
   - `batch_inference`: 批量推理阶段Worker数量 (默认1)
   - `segment_aggregation`: 片段聚合阶段Worker数量 (默认2)
   - `post_processing`: 后处理阶段Worker数量 (默认2)
+  - `result_writer`: 结果写入阶段Worker数量 (默认1)
+- `pipeline.gpu_allocation`: GPU资源分配策略
+  - `strategy`: 分配策略
+  - `nodes`: 节点配置
 - `pipeline.queue_max_size`: 队列最大大小，用于背压控制 (默认100)
 - `pipeline.worker_timeout`: Worker超时时间（秒） (默认300)
 - `pipeline.max_retries`: 最大重试次数 (默认3)
@@ -399,6 +443,7 @@ python tests/scheduling/test_ray_init.py
 - `vad.model_path`: VAD模型路径 (silero_vad.onnx)
 - `vad.sampling_rate`: 采样率 (16000)
 - `vad.threshold`: 检测阈值 (0.0-1.0)
+- `vad.neg_threshold`: 负阈值 (0.1)
 - `vad.min_speech_duration_ms`: 最小语音时长(毫秒)
 - `vad.min_silence_duration_ms`: 最小静音时长(毫秒)
 - `vad.speech_pad_ms`: 语音填充(毫秒)
@@ -408,6 +453,18 @@ python tests/scheduling/test_ray_init.py
 - `vad.cache_max_size_gb`: VAD缓存最大大小(GB)
 - `vad.cache_ttl_hours`: 缓存生存时间(小时)
 - `vad.parallel_workers`: VAD并行工作进程数
+
+### SegmentExpansion配置
+- `segment_expansion.min_segment_duration`: 最小片段时长(秒)
+- `segment_expansion.max_segment_duration`: 最大片段时长(秒)
+- `segment_expansion.segment_threshold`: 片段阈值
+- `segment_expansion.preserve_order`: 是否保持顺序
+- `segment_expansion.sampling_rate`: 采样率
+- `segment_expansion.resplit_min_speech_ms`: 重新分割最小语音时长(毫秒)
+- `segment_expansion.resplit_min_silence_ms`: 重新分割最小静音时长(毫秒)
+- `segment_expansion.resplit_threshold`: 重新分割阈值
+- `segment_expansion.resplit_neg_threshold`: 重新分割负阈值
+- `segment_expansion.resplit_speech_pad_ms`: 重新分割语音填充(毫秒)
 
 ### 多媒体处理配置
 - `media.target_sample_rate`: 音频转换目标采样率(Hz)
@@ -452,11 +509,13 @@ python tests/scheduling/test_ray_init.py
 - `inference.temperature`: 生成温度
 - `inference.max_tokens`: 最大生成token数
 - `inference.top_p`: Top-p采样参数
-- `inference.top_k`: Top-k采样参数
 - `inference.repetition_penalty`: 重复惩罚
 - `inference.max_num_seqs`: 最大序列数
-- `inference.limit_mm_per_prompt`: 多模态限制
 - `inference.seed`: 随机种子
+- `inference.limit_mm_per_prompt`: 多模态限制
+  - `image`: 每个提示的图像数量限制
+  - `video`: 每个提示的视频数量限制
+  - `audio`: 每个提示的音频数量限制
 - `inference.prompt_template`: 提示模板
 
 ### 写入配置
@@ -468,6 +527,12 @@ python tests/scheduling/test_ray_init.py
 - `writer.async_upload`: 异步上传
 - `writer.retry_attempts`: 重试次数
 - `writer.retry_delay`: 重试延迟
+- `writer.buffer_size_mb`: 缓冲区大小(MB)
+- `writer.max_buffer_size_mb`: 最大缓冲区大小(MB)
+- `writer.min_buffer_size_mb`: 最小缓冲区大小(MB)
+- `writer.multipart_threshold_mb`: 分段上传阈值(MB)
+- `writer.part_size_mb`: 分段大小(MB)
+- `writer.max_concurrent_parts`: 最大并发分段数
 
 ### 监控配置
 - `monitoring.enable_prometheus`: 启用Prometheus
@@ -478,6 +543,14 @@ python tests/scheduling/test_ray_init.py
 - `monitoring.checkpoint_interval`: 检查点间隔
 - `monitoring.checkpoint_dir`: 检查点目录
 - `monitoring.alert_rules`: 告警规则配置
+  - `name`: 告警规则名称
+  - `severity`: 严重程度
+  - `message`: 告警消息
+  - `condition`: 告警条件
+    - `type`: 条件类型
+    - `metric`: 指标名称
+    - `threshold`: 阈值
+    - `operator`: 操作符
 
 ## 开发规范
 
@@ -576,6 +649,11 @@ python tests/scheduling/test_ray_init.py
 - 设置适当的`worker_timeout`以处理长时间运行的任务
 - 使用死信队列处理无法处理的错误项目
 
+### 8. 简化处理模式
+- 使用`main_simple.py`进行小规模测试和调试
+- 串行处理模式便于定位问题
+- 无Ray依赖，减少系统复杂性
+
 ## 故障排除
 
 ### 常见问题
@@ -602,6 +680,8 @@ python tests/scheduling/test_ray_init.py
 21. **流式处理内存溢出**: 降低队列大小（`queue_max_size`）或增加背压控制
 22. **流式处理进度停滞**: 检查阶段间的数据传输和Worker状态
 23. **检查点恢复失败**: 验证检查点文件的完整性和格式
+24. **简化版Pipeline错误**: 检查串行处理逻辑和资源管理
+25. **结果写入性能问题**: 考虑使用优化版写入器
 
 ### 日志位置
 - 应用日志: `logs/asr_distillation_YYYY-MM-DD.log`
@@ -648,6 +728,9 @@ pytest tests/compute/test_audio_processor.py -v
 
 # 查看流式处理状态
 python main_stream.py status --checkpoint-dir ./checkpoints
+
+# 查看简化版处理状态
+python main_simple.py status --checkpoint-dir ./checkpoints
 ```
 
 ## 扩展性
@@ -712,6 +795,11 @@ python main_stream.py status --checkpoint-dir ./checkpoints
 - 检查点和恢复机制，支持断点续传
 - 动态资源调度，根据负载自动调整
 
+### 8. 简化调试设计
+- 提供无Ray的串行处理模式
+- 便于定位和解决复杂问题
+- 降低系统复杂性
+
 ## 部署建议
 
 ### 1. 硬件配置
@@ -764,6 +852,9 @@ python main_stream.py status --checkpoint-dir ./checkpoints
 24. 合理配置队列背压参数以防止内存溢出
 25. 使用阶段化Worker配置以优化资源利用率
 26. 定期检查和清理检查点文件以释放存储空间
+27. 对于调试和小规模处理，可以使用简化版Pipeline
+28. 使用优化版结果写入器以提升写入性能
+29. 配置适当的告警规则以监控系统健康状态
 
 ## 项目依赖
 
@@ -845,6 +936,8 @@ pip install -r requirements.txt
 python main.py create-config --output config.yaml
 # 或使用流式处理配置
 python main_stream.py create-config --output config.yaml
+# 或使用简化版配置
+python main_simple.py create-config --output config.yaml
 
 # 编辑配置文件
 vim config.yaml
@@ -853,6 +946,8 @@ vim config.yaml
 python main.py run --config config.yaml
 # 运行pipeline（大规模数据，推荐）
 python main_stream.py run --config config.yaml
+# 运行pipeline（调试模式）
+python main_simple.py run --config config.yaml
 ```
 
 ### 使用增强型运行脚本
@@ -897,11 +992,15 @@ pytest tests/scheduling/test_ray_init.py -v
 ### 项目结构说明
 - `main.py`: 主入口文件，定义CLI命令
 - `main_stream.py`: 流式处理主程序，支持千万级数据处理
+- `main_simple.py`: 简化版主程序，无Ray串行处理，便于调试
 - `config.yaml`: 配置文件模板
 - `pyproject.toml`: 项目元数据和依赖配置
 - `requirements.txt`: Python依赖列表
 - `Note.md`: 问题记录和开发笔记
-- `fixCode.md`: Bug修复记录
+- `BATCH_DATA_DESIGN.md`: 批处理数据设计文档
+- `CLAUDE.md`: AI助手交互文档
+- `PROJECT_SUMMARY.md`: 项目总结文档
+- `verify_changes.py`: 变更验证脚本
 - `src/`: 源代码目录
   - `compute/`: 计算层，包含音频处理和推理
   - `data/`: 数据层，包含索引和存储
@@ -918,6 +1017,8 @@ pytest tests/scheduling/test_ray_init.py -v
   - `data/`: 数据层测试
   - `scheduling/`: 调度层测试
   - `config/`: 配置管理测试
+- `docs/`: 文档目录
+  - `stream_pipeline.md`: 流式Pipeline设计文档
 
 ### 版本信息
 - 版本: 0.1.0
@@ -954,3 +1055,9 @@ pytest tests/scheduling/test_ray_init.py -v
 - **多阶段流水线**: 支持任意数量的顺序处理阶段
 - **Segment处理**: 音频片段的展开和聚合处理
 - **阶段化Worker配置**: 支持为每个阶段独立配置Worker数量
+- **简化版Pipeline**: 新增`main_simple.py`，提供无Ray的串行处理模式，便于调试
+- **优化结果写入器**: 新增`OptimizedResultWriterStage`，提升写入性能
+- **增强配置系统**: 支持更细粒度的GPU资源分配和监控告警规则
+- **改进多媒体处理**: 增强对多种音视频格式的支持和处理能力
+- **改进的配置验证**: 更严格的配置验证和错误处理
+- **增强的监控告警**: 支持自定义告警规则和多维度指标监控

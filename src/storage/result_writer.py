@@ -808,6 +808,27 @@ class OptimizedWriteConfig:
     retry_attempts: int = 3
     retry_delay: float = 1.0
 
+@dataclass
+class SegmentUploadConfig:
+    """Segment上传配置"""
+    # 音频片段上传配置
+    audio_segment_prefix: str = "audio_segments/"  # 音频片段存储前缀
+    metadata_prefix: str = "segment_metadata/"     # 元数据存储前缀
+    audio_format: str = "wav"                      # 音频格式
+    enable_segment_upload: bool = False            # 是否启用segment上传
+    segment_metadata_batch_size: int = 1000        # 元数据批量处理大小
+    
+    # 继承自OptimizedWriteConfig的参数
+    buffer_size_mb: float = 10.0
+    max_buffer_size_mb: float = 50.0
+    min_buffer_size_mb: float = 5.0
+    multipart_threshold_mb: int = 100
+    part_size_mb: int = 10
+    max_concurrent_parts: int = 4
+    output_format: str = 'jsonl'
+    retry_attempts: int = 3
+    retry_delay: float = 1.0
+
 class OptimizedResultWriter:
     """优化的结果写入器 - 内存直传 + 批量聚合 + 分片并发"""
     
@@ -1032,6 +1053,119 @@ class OptimizedResultWriter:
         """统计"""
         return self.stats.copy()
 
+
+class AudioSegmentUploader:
+    """音频片段上传管理器"""
+    
+    def __init__(self, 
+                 config: SegmentUploadConfig,
+                 storage_manager: MediaStorageManager):
+        self.config = config
+        self.storage_manager = storage_manager
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        
+        # 为元数据创建独立的优化写入器
+        self.metadata_writer = OptimizedResultWriter(
+            OptimizedWriteConfig(
+                batch_size=config.segment_metadata_batch_size,
+                buffer_size_mb=config.buffer_size_mb,
+                max_buffer_size_mb=config.max_buffer_size_mb,
+                min_buffer_size_mb=config.min_buffer_size_mb,
+                multipart_threshold_mb=config.multipart_threshold_mb,
+                part_size_mb=config.part_size_mb,
+                max_concurrent_parts=config.max_concurrent_parts,
+                output_format=config.output_format,
+                retry_attempts=config.retry_attempts,
+                retry_delay=config.retry_delay
+            ),
+            storage_manager,
+            worker_id="segment_metadata"
+        )
+        
+        self.stats = {
+            'segments_uploaded': 0,
+            'metadata_records_written': 0,
+            'audio_bytes_uploaded': 0,
+            'errors': 0
+        }
+        self.lock = threading.Lock()
+    
+    def upload_segment(self, 
+                      segment_audio: np.ndarray, 
+                      original_oss_path: str, 
+                      start_time: float, 
+                      end_time: float,
+                      sample_rate: int = 16000,
+                      segment_id: Optional[str] = None) -> Optional[str]:
+        """上传音频片段并返回OSS路径"""
+        try:
+            if segment_id is None:
+                segment_id = f"seg_{uuid.uuid4().hex[:16]}_{int(start_time*1000)}_{int(end_time*1000)}"
+            
+            # 将音频数据转换为字节
+            audio_bytes = self._audio_to_bytes(segment_audio, sample_rate)
+            
+            # 构建OSS路径
+            audio_oss_path = f"{self.config.audio_segment_prefix}{segment_id}.{self.config.audio_format}"
+            
+            # 上传音频片段
+            oss_client = self.storage_manager.oss_client
+            oss_client.bucket.put_object(audio_oss_path, audio_bytes)
+            
+            self.stats['segments_uploaded'] += 1
+            self.stats['audio_bytes_uploaded'] += len(audio_bytes)
+            
+            logger.debug(f"Uploaded segment {segment_id} to {audio_oss_path}")
+            return audio_oss_path
+            
+        except Exception as e:
+            logger.error(f"Failed to upload segment: {e}", exc_info=True)
+            self.stats['errors'] += 1
+            return None
+    
+    def _audio_to_bytes(self, audio_data: np.ndarray, sample_rate: int) -> bytes:
+        """将音频数据转换为字节"""
+        import io
+        import wave
+        
+        # 创建内存中的wave文件
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)  # 单声道
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(sample_rate)
+            
+            # 转换音频数据为16-bit整数
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+        
+        return buffer.getvalue()
+    
+    def write_segment_metadata(self, 
+                             segment_info: Dict[str, Any]) -> bool:
+        """写入segment元数据到JSONL"""
+        try:
+            # 使用优化的元数据写入器
+            return self.metadata_writer.write_batch([segment_info])
+        except Exception as e:
+            logger.error(f"Failed to write segment metadata: {e}", exc_info=True)
+            self.stats['errors'] += 1
+            return False
+    
+    def flush(self) -> bool:
+        """刷新所有缓冲区"""
+        return self.metadata_writer.flush()
+    
+    def close(self):
+        """关闭上传器"""
+        self.flush()
+        self.metadata_writer.close()
+        self.executor.shutdown(wait=True)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        metadata_stats = self.metadata_writer.get_stats()
+        return {**self.stats, **metadata_stats}
 
 class OptimizedResultWriterStage:
     """优化的结果写入Stage"""

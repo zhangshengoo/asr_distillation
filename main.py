@@ -132,8 +132,18 @@ async def run_pipeline(config_path: str,
                 'name': 'segment_expansion',
                 'num_workers': stage_workers_config.get('segment_expansion', 4),  # 中等CPU需求
                 'config': {
-                    'min_segment_duration': 0.1,
-                    'preserve_order': True
+                    'min_segment_duration': config.segment_expansion.min_segment_duration,
+                    'max_segment_duration': config.segment_expansion.max_segment_duration,
+                    'segment_threshold': config.segment_expansion.segment_threshold,
+                    'preserve_order': config.segment_expansion.preserve_order,
+                    'sampling_rate': config.segment_expansion.sampling_rate,
+                    'resplit_min_speech_ms': config.segment_expansion.resplit_min_speech_ms,
+                    'resplit_min_silence_ms': config.segment_expansion.resplit_min_silence_ms,
+                    'resplit_threshold': config.segment_expansion.resplit_threshold,
+                    'resplit_neg_threshold': config.segment_expansion.resplit_neg_threshold,
+                    'resplit_speech_pad_ms': config.segment_expansion.resplit_speech_pad_ms,
+                    'segment_upload': config.segment_upload.__dict__ if hasattr(config, 'segment_upload') else {},
+                    'storage': config.data.storage
                 }
             },
             {

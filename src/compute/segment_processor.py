@@ -1,6 +1,7 @@
 """Segment处理阶段 - 音频片段展开与聚合"""
 
 import time
+import uuid
 from typing import Dict, List, Any
 from dataclasses import dataclass
 import logging
@@ -21,6 +22,7 @@ class SegmentExpansionStage(PipelineStage):
     2. 智能切分超长片段（>178秒）：优先在静音处切分，否则等分
     3. 过滤无效的segments
     4. 保持与后续阶段的接口兼容性
+    5. 支持音频片段上传到OSS（可选）
     """
     
     def __init__(self, config: Dict[str, Any]):
@@ -44,6 +46,18 @@ class SegmentExpansionStage(PipelineStage):
         
         # VAD模型（懒加载，仅在需要切分超长片段时使用）
         self.vad_model = None
+        
+        # 初始化音频片段上传功能（如果启用）
+        self.segment_uploader = None
+        self.enable_segment_upload = config.get('segment_upload', {}).get('enable_segment_upload', False)
+        
+        if self.enable_segment_upload and 'storage' in config:
+            from src.data.storage import MediaStorageManager
+            from src.storage.result_writer import AudioSegmentUploader, SegmentUploadConfig
+            
+            storage_manager = MediaStorageManager(config['storage'])
+            segment_config = SegmentUploadConfig(**config.get('segment_upload', {}))
+            self.segment_uploader = AudioSegmentUploader(segment_config, storage_manager)
         
         # 统计信息
         self.stats = {
@@ -251,8 +265,39 @@ class SegmentExpansionStage(PipelineStage):
             segment_items = []
             
             for idx, segment_data in enumerate(valid_segments):
+                # 如果启用了segment上传，上传音频片段
+                segment_oss_path = None
+                if self.segment_uploader and hasattr(segment_data, 'audio_data') and segment_data.audio_data is not None:
+                    original_oss_path = getattr(item, 'oss_path', getattr(item, 'file_id', 'unknown'))
+                    segment_id = f"seg_{getattr(item, 'file_id', uuid.uuid4().hex[:8])}_{idx}_{int(segment_data.start_time*1000)}_{int(segment_data.end_time*1000)}"
+                    
+                    segment_oss_path = self.segment_uploader.upload_segment(
+                        segment_data.audio_data,
+                        original_oss_path,
+                        segment_data.start_time,
+                        segment_data.end_time,
+                        segment_data.sample_rate,
+                        segment_id
+                    )
+                    
+                    # 记录元数据
+                    if segment_oss_path:
+                        segment_metadata = {
+                            'segment_id': segment_id,
+                            'original_oss_path': original_oss_path,
+                            'segment_oss_path': segment_oss_path,
+                            'start_time': segment_data.start_time,
+                            'end_time': segment_data.end_time,
+                            'duration': segment_data.duration,
+                            'original_file_id': getattr(item, 'file_id', ''),
+                            'timestamp': time.time(),
+                            'processing_metadata': getattr(item, 'metadata', {})
+                        }
+                        
+                        self.segment_uploader.write_segment_metadata(segment_metadata)
+                
                 segment_item = SegmentItem(
-                    file_id=item.file_id,
+                    file_id=f"{item.file_id}_seg_{idx}",
                     parent_file_id=item.file_id,
                     segment_id=segment_data.segment_id,
                     segment_index=idx,
@@ -260,12 +305,13 @@ class SegmentExpansionStage(PipelineStage):
                     end_time=segment_data.end_time,
                     waveform=segment_data.audio_data,
                     original_duration=segment_data.original_duration,
-                    oss_path=item.oss_path,
+                    oss_path=segment_oss_path if segment_oss_path else item.oss_path,
                     metadata={
                         **item.metadata,
                         'sample_rate': segment_data.sample_rate,
                         'duration': segment_data.duration,
-                        'processing_timestamp': time.time()
+                        'processing_timestamp': time.time(),
+                        'segment_oss_path': segment_oss_path  # 添加segment OSS路径到metadata
                     }
                 )
                 segment_items.append(segment_item)
@@ -316,7 +362,18 @@ class SegmentExpansionStage(PipelineStage):
             stats['smart_split_ratio'] = stats['smart_split_count'] / stats['split_segments']
             stats['forced_split_ratio'] = stats['forced_split_count'] / stats['split_segments']
         
+        # 添加segment上传统计
+        if self.segment_uploader:
+            stats.update(self.segment_uploader.get_stats())
+        
         return stats
+    
+    def cleanup(self):
+        """清理资源"""
+        if self.segment_uploader:
+            self.segment_uploader.close()
+            self.logger.info("Segment uploader closed")
+        super().cleanup()
 
 class SegmentAggregationStage(PipelineStage):
     """音频片段聚合阶段 - 将segment级别的结果聚合到文件级别
