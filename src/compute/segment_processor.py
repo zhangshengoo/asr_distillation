@@ -51,7 +51,7 @@ class SegmentExpansionStage(PipelineStage):
         self.segment_uploader = None
         self.enable_segment_upload = config.get('segment_upload', {}).get('enable_segment_upload', False)
         
-        if self.enable_segment_upload and 'storage' in config:
+        if self.enable_segment_upload and ('input_storage' in config and 'output_storage' in config):
             from src.data.storage import MediaStorageManager
             from src.storage.result_writer import AudioSegmentUploader, SegmentUploadConfig
             
