@@ -81,13 +81,15 @@ async def run_pipeline(config_path: str,
         cpu_stage_config = {
             'data': config.data.__dict__,
             'audio': config.audio.__dict__,
-            'storage': config.data.storage
+            'input_storage': config.data.input_storage,
+            'output_storage': config.data.output_storage
         }
         
         gpu_stage_config = {
             'inference': config.inference.__dict__,
             'writer': config.writer.__dict__,
-            'storage': config.data.storage
+            'input_storage': config.data.input_storage,
+            'output_storage': config.data.output_storage
         }
         
         # Setup multi-stage pipeline with all stages
@@ -143,7 +145,8 @@ async def run_pipeline(config_path: str,
                     'resplit_neg_threshold': config.segment_expansion.resplit_neg_threshold,
                     'resplit_speech_pad_ms': config.segment_expansion.resplit_speech_pad_ms,
                     'segment_upload': config.segment_upload.__dict__ if hasattr(config, 'segment_upload') else {},
-                    'storage': config.data.storage
+                    'input_storage': config.data.input_storage,
+                    'output_storage': config.data.output_storage
                 }
             },
             {
@@ -185,7 +188,8 @@ async def run_pipeline(config_path: str,
         # Setup result writer
         result_writer = ResultWriterStage({
             'writer': config.writer.__dict__,
-            'storage': config.data.storage
+            'input_storage': config.data.input_storage,
+            'output_storage': config.data.output_storage
         })
         await result_writer.start()
         

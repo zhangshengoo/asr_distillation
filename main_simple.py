@@ -138,26 +138,26 @@ def setup_pipeline(config) -> SimplePipeline:
     
     # 1. 音频下载阶段
     pipeline.add_stage(
-        'audio_download',
-        AudioDownloadStage({
-            'data': config.data.__dict__,
-            'audio': config.audio.__dict__,
-            'storage': config.data.storage,
-            'enable_multimedia': enable_multimedia,
-            'media': config.media.__dict__ if enable_multimedia else {}
-        })
-    )
-    
+            'audio_download',
+            AudioDownloadStage({
+                'data': config.data.__dict__,
+                'audio': config.audio.__dict__,
+                'input_storage': config.data.input_storage,
+                'output_storage': config.data.output_storage,
+                'enable_multimedia': enable_multimedia,
+                'media': config.media.__dict__ if enable_multimedia else {}
+            })
+        )    
     # 2. 音频预处理阶段
     pipeline.add_stage(
-        'audio_preprocessing',
-        AudioPreprocessingStage({
-            'data': config.data.__dict__,
-            'audio': config.audio.__dict__,
-            'storage': config.data.storage
-        })
-    )
-    
+            'audio_preprocessing',
+            AudioPreprocessingStage({
+                'data': config.data.__dict__,
+                'audio': config.audio.__dict__,
+                'input_storage': config.data.input_storage,
+                'output_storage': config.data.output_storage
+            })
+        )    
     # 3. VAD处理阶段
     pipeline.add_stage(
         'vad_processing',
@@ -178,24 +178,20 @@ def setup_pipeline(config) -> SimplePipeline:
     
     # 5. 特征提取阶段
     pipeline.add_stage(
-        'feature_extraction',
-        AudioFeatureStage({
-            'data': config.data.__dict__,
-            'audio': config.audio.__dict__,
-            'storage': config.data.storage
-        })
-    )
-    
+            'feature_extraction',
+            AudioFeatureStage({
+                'data': config.data.__dict__,
+                'audio': config.audio.__dict__
+            })
+        )    
     # 6. 批量推理阶段（GPU）
     pipeline.add_stage(
-        'batch_inference',
-        BatchInferenceStage({
-            'inference': config.inference.__dict__,
-            'writer': config.writer.__dict__,
-            'storage': config.data.storage
-        })
-    )
-    
+            'batch_inference',
+            BatchInferenceStage({
+                'inference': config.inference.__dict__,
+                'writer': config.writer.__dict__
+            })
+        )    
     # 7. 片段聚合阶段
     pipeline.add_stage(
         'segment_aggregation',
@@ -209,13 +205,13 @@ def setup_pipeline(config) -> SimplePipeline:
     # 8. 后处理阶段
     pipeline.add_stage(
         'post_processing',
-        PostProcessingStage({
-            'inference': config.inference.__dict__,
-            'writer': config.writer.__dict__,
-            'storage': config.data.storage
-        })
-    )
-    
+            PostProcessingStage({
+                'inference': config.inference.__dict__,
+                'writer': config.writer.__dict__,
+                'input_storage': config.data.input_storage,
+                'output_storage': config.data.output_storage
+            })
+        )    
     return pipeline
 
 
@@ -255,7 +251,8 @@ def run_pipeline(config_path: str,
     # 4. 创建结果写入器
     writer_config = {
         'writer': config.writer.__dict__,
-        'storage': config.data.storage if hasattr(config.data, 'storage') else None,
+        'input_storage': config.data.input_storage,
+        'output_storage': config.data.output_storage,
         'output_dir': './results'  # Configured in writer config usually, but keeping for compat
     }
     writer = SyncResultWriter(writer_config)

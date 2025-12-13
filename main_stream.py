@@ -114,7 +114,8 @@ async def run_pipeline(config_path: str,
                 'config': {
                     'data': config.data.__dict__,
                     'audio': config.audio.__dict__,
-                    'storage': config.data.storage,
+                    'input_storage': config.data.input_storage,
+                    'output_storage': config.data.output_storage,
                     'enable_multimedia': enable_multimedia,
                     'media': config.media.__dict__ if enable_multimedia else {}
                 }
@@ -127,7 +128,8 @@ async def run_pipeline(config_path: str,
                 'config': {
                     'data': config.data.__dict__,
                     'audio': config.audio.__dict__,
-                    'storage': config.data.storage
+                    'input_storage': config.data.input_storage,
+                    'output_storage': config.data.output_storage
                 }
             },
             {
@@ -157,7 +159,8 @@ async def run_pipeline(config_path: str,
                     'resplit_neg_threshold': config.segment_expansion.resplit_neg_threshold,
                     'resplit_speech_pad_ms': config.segment_expansion.resplit_speech_pad_ms,
                     'segment_upload': config.segment_upload.__dict__ if hasattr(config, 'segment_upload') else {},
-                    'storage': config.data.storage
+                    'input_storage': config.data.input_storage,
+                    'output_storage': config.data.output_storage
                 }
             },
             {
@@ -167,8 +170,7 @@ async def run_pipeline(config_path: str,
                 'num_workers': stage_workers_config.get('feature_extraction', 6),
                 'config': {
                     'data': config.data.__dict__,
-                    'audio': config.audio.__dict__,
-                    'storage': config.data.storage
+                    'audio': config.audio.__dict__
                 }
             },
             {
@@ -178,8 +180,7 @@ async def run_pipeline(config_path: str,
                 'num_workers': stage_workers_config.get('batch_inference', 1),
                 'config': {
                     'inference': config.inference.__dict__,
-                    'writer': config.writer.__dict__,
-                    'storage': config.data.storage
+                    'writer': config.writer.__dict__
                 }
             },
             {
@@ -201,7 +202,8 @@ async def run_pipeline(config_path: str,
                 'config': {
                     'inference': config.inference.__dict__,
                     'writer': config.writer.__dict__,
-                    'storage': config.data.storage
+                    'input_storage': config.data.input_storage,
+                    'output_storage': config.data.output_storage
                 }
             },
             {
@@ -211,7 +213,8 @@ async def run_pipeline(config_path: str,
                 'num_workers': stage_workers_config.get('result_writer', 1),
                 'config': {
                     'writer': config.writer.__dict__,
-                    'storage': config.data.storage
+                    'input_storage': config.data.input_storage,
+                    'output_storage': config.data.output_storage
                 }
             }
         ]
