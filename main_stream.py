@@ -158,7 +158,7 @@ async def run_pipeline(config_path: str,
                     'resplit_threshold': config.segment_expansion.resplit_threshold,
                     'resplit_neg_threshold': config.segment_expansion.resplit_neg_threshold,
                     'resplit_speech_pad_ms': config.segment_expansion.resplit_speech_pad_ms,
-                    'segment_upload': config.segment_upload.__dict__ if hasattr(config, 'segment_upload') else {},
+                    'segment_upload': config.segment_upload,
                     'input_storage': config.data.input_storage,
                     'output_storage': config.data.output_storage
                 }
