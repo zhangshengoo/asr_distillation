@@ -941,8 +941,8 @@ class OptimizedResultWriter:
     def _simple_upload(self, content: io.BytesIO, filename: str) -> bool:
         """普通上传"""
         try:
-            oss_client = self.storage_manager.oss_client
-            key = f"{self.storage_manager.result_prefix}{filename}"
+            oss_client = self.storage_manager.get_output_client()
+            key = f"{self.storage_manager.output_result_prefix}{filename}"
             
             for attempt in range(self.config.retry_attempts):
                 try:
@@ -962,8 +962,8 @@ class OptimizedResultWriter:
     def _multipart_upload(self, content: io.BytesIO, filename: str, total_size: int) -> bool:
         """分片上传"""
         try:
-            oss_client = self.storage_manager.oss_client
-            key = f"{self.storage_manager.result_prefix}{filename}"
+            oss_client = self.storage_manager.get_output_client()
+            key = f"{self.storage_manager.output_result_prefix}{filename}"
             
             upload_id = oss_client.bucket.init_multipart_upload(key).upload_id
             self.stats['multipart_uploads'] += 1
@@ -1117,7 +1117,7 @@ class AudioSegmentUploader:
             audio_oss_path = f"{self.config.audio_segment_prefix}{segment_id}.{self.config.audio_format}"
             
             # 上传音频片段
-            oss_client = self.storage_manager.oss_client
+            oss_client = self.storage_manager.get_output_client()
             oss_client.bucket.put_object(audio_oss_path, audio_bytes)
             
             self.stats['segments_uploaded'] += 1

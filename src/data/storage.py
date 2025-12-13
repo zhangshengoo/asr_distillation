@@ -114,16 +114,6 @@ class MediaStorageManager:
     def get_default_client(self):
         """获取默认存储客户端（为了向后兼容）"""
         return self.output_oss_client  # 使用输出存储作为默认值，因为上传更常见
-
-    @property
-    def oss_client(self):
-        """为向后兼容提供的属性"""
-        return self.output_oss_client
-
-    @property
-    def result_prefix(self):
-        """为向后兼容提供的属性，返回输出结果前缀"""
-        return self.output_result_prefix
     
     def parse_oss_path(self, oss_path: str) -> str:
         """解析oss://bucket/key路径，返回key"""
