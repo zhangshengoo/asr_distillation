@@ -284,6 +284,40 @@ class VADConfig:
 
 
 @dataclass
+class SegmentExpansionConfig:
+    """Segment展开配置 - 控制音频片段展开和切分参数"""
+    # 最小片段时长(秒)，低于此值的片段将被过滤
+    min_segment_duration: float = 0.5
+    
+    # 最大片段时长(秒)，超过此值的片段将被切分
+    max_segment_duration: float = 178
+    
+    # 切分阈值(秒)，目标切分间隔
+    segment_threshold: int = 120
+    
+    # 是否保持片段顺序
+    preserve_order: bool = True
+    
+    # 采样率
+    sampling_rate: int = 16000
+    
+    # 重新分割最小语音时长(毫秒)
+    resplit_min_speech_ms: int = 1500
+    
+    # 重新分割最小静音时长(毫秒)
+    resplit_min_silence_ms: int = 300
+    
+    # 重新分割阈值
+    resplit_threshold: float = 0.4
+    
+    # 重新分割负阈值
+    resplit_neg_threshold: float = 0.15
+    
+    # 重新分割语音填充(毫秒)
+    resplit_speech_pad_ms: int = 100
+
+
+@dataclass
 class ASRDistillationConfig:
     """ASR蒸馏框架主配置类 - 整合所有子模块配置"""
     # 数据层配置，管理音频数据索引、缓存和存储
@@ -297,6 +331,9 @@ class ASRDistillationConfig:
     
     # VAD语音活动检测配置
     vad: VADConfig = field(default_factory=VADConfig)
+    
+    # Segment展开配置
+    segment_expansion: SegmentExpansionConfig = field(default_factory=SegmentExpansionConfig)
     
     # 音频处理配置，控制音频预处理和特征提取参数
     audio: AudioConfig = field(default_factory=AudioConfig)
@@ -358,6 +395,8 @@ class ConfigManager:
                     self._update_dataclass(self.config.media, config_dict['media'])
                 if 'vad' in config_dict:
                     self._update_dataclass(self.config.vad, config_dict['vad'])
+                if 'segment_expansion' in config_dict:
+                    self._update_dataclass(self.config.segment_expansion, config_dict['segment_expansion'])
                 if 'audio' in config_dict:
                     self._update_dataclass(self.config.audio, config_dict['audio'])
                 if 'inference' in config_dict:
