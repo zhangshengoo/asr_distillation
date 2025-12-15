@@ -50,8 +50,8 @@ class SegmentExpansionStage(PipelineStage):
         # 初始化音频片段上传功能（如果启用）
         self.segment_uploader = None
         self.enable_segment_upload = config.get('segment_upload', {}).get('enable_segment_upload', False)
-        
-        if self.enable_segment_upload and ('input_storage' in config and 'output_storage' in config):
+        if self.enable_segment_upload:
+            assert 'input_storage' in config  and 'output_storage' in config, "need input_storage and output_storage when enable_segment_upload"
             from src.data.storage import MediaStorageManager
             from src.storage.result_writer import AudioSegmentUploader, SegmentUploadConfig
             
@@ -299,7 +299,7 @@ class SegmentExpansionStage(PipelineStage):
                             'duration': segment_data.duration,
                             'original_file_id': getattr(item, 'file_id', ''),
                             'timestamp': time.time(),
-                            'processing_metadata': getattr(item, 'metadata', {})
+                            #'processing_metadata': getattr(item, 'metadata', {})
                         }
                         
                         self.segment_uploader.write_segment_metadata(segment_metadata)

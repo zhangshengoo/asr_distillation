@@ -1106,30 +1106,24 @@ class AudioSegmentUploader:
                       sample_rate: int = 16000,
                       segment_id: Optional[str] = None) -> Optional[str]:
         """上传音频片段并返回OSS路径"""
-        try:
-            if segment_id is None:
-                segment_id = f"seg_{uuid.uuid4().hex[:16]}_{int(start_time*1000)}_{int(end_time*1000)}"
-            
-            # 将音频数据转换为字节
-            audio_bytes = self._audio_to_bytes(segment_audio, sample_rate)
-            
-            # 构建OSS路径
-            audio_oss_path = f"{self.config.audio_segment_prefix}{segment_id}.{self.config.audio_format}"
-            
-            # 上传音频片段
-            oss_client = self.storage_manager.get_output_client()
-            oss_client.bucket.put_object(audio_oss_path, audio_bytes)
-            
-            self.stats['segments_uploaded'] += 1
-            self.stats['audio_bytes_uploaded'] += len(audio_bytes)
-            
-            logger.debug(f"Uploaded segment {segment_id} to {audio_oss_path}")
-            return audio_oss_path
-            
-        except Exception as e:
-            logger.error(f"Failed to upload segment: {e}", exc_info=True)
-            self.stats['errors'] += 1
-            return None
+        if segment_id is None:
+            segment_id = f"seg_{uuid.uuid4().hex[:16]}_{int(start_time*1000)}_{int(end_time*1000)}"
+        
+        # 将音频数据转换为字节
+        audio_bytes = self._audio_to_bytes(segment_audio, sample_rate)
+        
+        # 构建OSS路径
+        audio_oss_path = f"{self.config.audio_segment_prefix}{segment_id}.{self.config.audio_format}"
+        
+        # 上传音频片段
+        oss_client = self.storage_manager.get_output_client()
+        oss_client.bucket.put_object(audio_oss_path, audio_bytes)
+        
+        self.stats['segments_uploaded'] += 1
+        self.stats['audio_bytes_uploaded'] += len(audio_bytes)
+        
+        logger.debug(f"Uploaded segment {segment_id} to {audio_oss_path}")
+        return audio_oss_path
     
     def _audio_to_bytes(self, audio_data: np.ndarray, sample_rate: int) -> bytes:
         """将音频数据转换为字节"""
@@ -1152,13 +1146,7 @@ class AudioSegmentUploader:
     def write_segment_metadata(self, 
                              segment_info: Dict[str, Any]) -> bool:
         """写入segment元数据到JSONL"""
-        try:
-            # 使用优化的元数据写入器
-            return self.metadata_writer.write_batch([segment_info])
-        except Exception as e:
-            logger.error(f"Failed to write segment metadata: {e}", exc_info=True)
-            self.stats['errors'] += 1
-            return False
+        return self.metadata_writer.write_batch([segment_info])
     
     def flush(self) -> bool:
         """刷新所有缓冲区"""
