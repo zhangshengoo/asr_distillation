@@ -7,7 +7,7 @@ import logging
 from typing import Dict, List, Any
 import numpy as np
 
-from simple_ray_pipeline import StageProcessor, ProcessBatch
+from data_process.simple_ray_pipeline import StageProcessor, ProcessBatch
 from src.common import BatchData, SourceItem, RawAudioItem, TensorItem, SegmentItem
 
 logger = logging.getLogger(__name__)

@@ -19,8 +19,8 @@ from typing import Optional
 import typer
 import ray
 
-from simple_ray_pipeline import SimplifiedPipeline
-from audio_stage_processors import (
+from data_process.simple_ray_pipeline import SimplifiedPipeline
+from data_process.audio_stage_processors import (
     AudioDownloadProcessor,
     AudioPreprocessingProcessor,
     VADProcessor,

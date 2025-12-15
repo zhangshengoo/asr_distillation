@@ -13,7 +13,7 @@ from pathlib import Path
 # 添加路径
 sys.path.insert(0, '/home/claude')
 
-from simple_ray_pipeline import SimplifiedPipeline, ProcessBatch, StageProcessor
+from data_process.simple_ray_pipeline import SimplifiedPipeline, ProcessBatch, StageProcessor
 import ray
 
 
