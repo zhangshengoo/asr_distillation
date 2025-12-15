@@ -185,16 +185,23 @@ class StreamingDataProducer:
             max_batches: 最大批次数（用于测试）
             num_downstream_workers: 下游stage的worker数量，用于发送正确数量的结束信号
         """
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"[PRODUCER] Starting, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         try:
             audio_records = self.load_index()
-            self.logger.info(f"[PRODUCER] Total records in index: {len(audio_records)}")
+            current_process = psutil.Process()
+            self.logger.info(f"[PRODUCER] Total records in index: {len(audio_records)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
             
             # 过滤已处理的文件
             remaining_records = [
                 record for record in audio_records 
                 if record['file_id'] not in self.processed_file_ids
             ]
-            self.logger.info(f"[PRODUCER] Remaining records to process: {len(remaining_records)}")
+            current_process = psutil.Process()
+            self.logger.info(f"[PRODUCER] Remaining records to process: {len(remaining_records)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
             self.logger.info(f"[PRODUCER] Will send {num_downstream_workers} END_OF_STREAM signals when done")
             self.logger.info(f"[PRODUCER] current_batch_idx={self.current_batch_idx}, remaining_records={len(remaining_records)}, batch_size={self.batch_size}")
             self.logger.info(f"[PRODUCER] range({self.current_batch_idx}, {len(remaining_records)}, {self.batch_size})")
@@ -240,10 +247,12 @@ class StreamingDataProducer:
                     # 定期保存检查点
                     if batch_count % checkpoint_interval == 0:
                         self._save_checkpoint()
-                        self.logger.info(f"[PRODUCER] Checkpoint saved: {batch_count} batches produced")
+                        current_process = psutil.Process()
+                        self.logger.info(f"[PRODUCER] Checkpoint saved: {batch_count} batches produced, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
                     
                 except Full:
-                    self.logger.warning("[PRODUCER] Output queue full, retrying...")
+                    current_process = psutil.Process()
+                    self.logger.warning(f"[PRODUCER] Output queue full, retrying..., Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
                     time.sleep(1)
             
             # 发送多个结束信号（每个下游worker一个）
@@ -254,16 +263,19 @@ class StreamingDataProducer:
                     target_worker_count=num_downstream_workers
                 )
                 output_queue.put(end_signal, block=True)
-                self.logger.info(f"[PRODUCER] Sent END_OF_STREAM signal {i+1}/{num_downstream_workers}")
+                current_process = psutil.Process()
+                self.logger.info(f"[PRODUCER] Sent END_OF_STREAM signal {i+1}/{num_downstream_workers}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
             
             # 最终保存检查点
             self._save_checkpoint()
             
-            self.logger.info(f"[PRODUCER] Completed: {batch_count} batches produced, {num_downstream_workers} end signals sent")
+            current_process = psutil.Process()
+            self.logger.info(f"[PRODUCER] Completed: {batch_count} batches produced, {num_downstream_workers} end signals sent, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
             
         except Exception as e:
             import traceback
-            self.logger.error(f"[PRODUCER] Error: {e}")
+            current_process = psutil.Process()
+            self.logger.error(f"[PRODUCER] Error, Threads: {current_process.num_threads()}, Active: {threading.active_count()}: {e}")
             self.logger.error(f"[PRODUCER] Traceback:\n{traceback.format_exc()}")
             # 发送结束信号以避免下游worker无限等待
             for i in range(num_downstream_workers):
@@ -339,7 +351,10 @@ class StreamingPipelineWorker:
             barrier_actor: 终止屏障Actor (TerminationBarrier)
             is_final_stage: 是否为最后一个stage
         """
-        self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Started, is_final_stage={is_final_stage}, downstream_workers={num_downstream_workers}")
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Started, Threads: {current_process.num_threads()}, Active: {threading.active_count()}, is_final_stage={is_final_stage}, downstream_workers={num_downstream_workers}")
         
         try:
             while True:
@@ -349,7 +364,8 @@ class StreamingPipelineWorker:
                     
                     # 检查是否为PipelineSignal结束信号
                     if isinstance(batch, PipelineSignal):
-                        self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Received {batch}")
+                        current_process = psutil.Process()
+                        self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Received {batch}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
                         
                         if barrier_actor:
                             # 使用屏障协调终止
@@ -367,7 +383,8 @@ class StreamingPipelineWorker:
                             self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Forwarded {num_downstream_workers} END_OF_STREAM signals to downstream")
                         else:
                             # 最后stage：直接退出
-                            self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Final stage received END_OF_STREAM, exiting...")
+                            current_process = psutil.Process()
+                            self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Final stage received END_OF_STREAM, Threads: {current_process.num_threads()}, Active: {threading.active_count()}, exiting...")
                         break
                     
                     # 向后兼容：处理 None 信号（旧版本）
@@ -422,8 +439,9 @@ class StreamingPipelineWorker:
                         
                         # 定期打印状态 (每100个batch)
                         if self.processed_count % 100 == 0:
+                            current_process = psutil.Process()
                             avg_time = self.total_processing_time / self.processed_count
-                            self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Processed {self.processed_count} batches | Avg time: {avg_time:.3f}s")
+                            self.logger.info(f"[STAGE:{self.stage_name}][WORKER:{self.worker_id}] Processed {self.processed_count} batches | Avg time: {avg_time:.3f}s | Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
                         
                     except Exception as e:
                         import traceback
@@ -456,7 +474,8 @@ class StreamingPipelineWorker:
                     continue
                 except Exception as e:
                     import traceback
-                    self.logger.error(f"Worker {self.worker_id} unexpected error in stage '{self.stage_name}': {e}")
+                    current_process = psutil.Process()
+                    self.logger.error(f"Worker {self.worker_id} unexpected error in stage '{self.stage_name}', Threads: {current_process.num_threads()}, Active: {threading.active_count()}: {e}")
                     self.logger.error(f"Traceback:\n{traceback.format_exc()}")
                     break
             
@@ -470,14 +489,16 @@ class StreamingPipelineWorker:
                                        if self.processed_count > 0 else 0)
             }
             
-            self.logger.info(f"[STAGE:{self.stage_name}] Worker '{self.worker_id}' COMPLETED | processed={self.processed_count} | errors={self.error_count} | avg_time={stats['avg_processing_time']:.2f}s")
+            current_process = psutil.Process()
+            self.logger.info(f"[STAGE:{self.stage_name}] Worker '{self.worker_id}' COMPLETED | processed={self.processed_count} | errors={self.error_count} | avg_time={stats['avg_processing_time']:.2f}s | Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
             return stats
             
         finally:
             # 清理事件循环
             if self.loop is not None:
                 self.loop.close()
-                self.logger.info(f"Worker {self.worker_id} event loop closed")
+                current_process = psutil.Process()
+                self.logger.info(f"Worker {self.worker_id} event loop closed, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
 
 
 class StreamingPipelineOrchestrator:
@@ -592,11 +613,17 @@ class StreamingPipelineOrchestrator:
         Returns:
             Pipeline execution statistics
         """
+        import psutil
+        import threading
         self.start_time = time.time()
         self.monitoring_system = monitoring_system
         
         if not self.producer:
             raise ValueError("Pipeline not setup. Call setup_multi_stage_pipeline() first.")
+        
+        # 记录开始时的系统资源
+        current_process = psutil.Process()
+        self.logger.info(f"Pipeline starting - Threads: {current_process.num_threads()}, Active threads: {threading.active_count()}")
         
         self.logger.info("Starting streaming pipeline execution")
         
@@ -680,6 +707,10 @@ class StreamingPipelineOrchestrator:
             # 等待生产者完成
             ray.get(producer_task)
             
+            # 记录结束时的系统资源
+            current_process = psutil.Process()
+            self.logger.info(f"Pipeline finishing - Threads: {current_process.num_threads()}, Active threads: {threading.active_count()}")
+            
             # 计算统计信息（不需要results列表）
             execution_stats = self._compute_stats(worker_stats, [])
             
@@ -697,6 +728,9 @@ class StreamingPipelineOrchestrator:
             return execution_stats
             
         except Exception as e:
+            # 记录异常时的系统资源
+            current_process = psutil.Process()
+            self.logger.error(f"Pipeline execution failed - Threads: {current_process.num_threads()}, Active threads: {threading.active_count()}")
             self.logger.error(f"Pipeline execution failed: {e}")
             raise
         finally:
