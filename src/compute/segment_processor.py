@@ -56,11 +56,15 @@ class SegmentExpansionStage(PipelineStage):
             from src.storage.result_writer import AudioSegmentUploader, SegmentUploadConfig
             
             # 使用分离的输入和输出存储配置 - segment上传使用输出存储
+            # 克隆输出存储配置并使用metadata_prefix作为输出结果前缀
+            output_config = config['output_storage'].copy()
+            segment_config = SegmentUploadConfig(**config.get('segment_upload', {}))
+            output_config['result_prefix'] = segment_config.metadata_prefix  # 使用metadata_prefix作为输出结果前缀
+            
             storage_manager = MediaStorageManager(
                 input_config=config['input_storage'],
-                output_config=config['output_storage']
+                output_config=output_config
             )
-            segment_config = SegmentUploadConfig(**config.get('segment_upload', {}))
             self.segment_uploader = AudioSegmentUploader(segment_config, storage_manager)
         
         # 统计信息
