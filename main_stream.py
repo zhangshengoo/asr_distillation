@@ -83,7 +83,7 @@ async def run_pipeline(config_path: str,
             ray.init(
                 object_store_memory=config.pipeline.object_store_memory,
                 ignore_reinit_error=True,
-                logging_level=getattr(logging, config.log_level, logging.ERROR)  # 使用配置文件中的日志级别
+                logging_level=logging.ERROR  # 抑制Ray日志
             )
         
         # 3. 初始化监控系统

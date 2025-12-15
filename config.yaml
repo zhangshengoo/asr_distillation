@@ -1,4 +1,3 @@
-log_level: "INFO"
 data:
   index_path: "./data/index"
   cache_dir: "./data/cache"

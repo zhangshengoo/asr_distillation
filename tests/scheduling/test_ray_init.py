@@ -11,7 +11,6 @@ import psutil
 import os
 import tempfile
 import signal
-import logging
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
@@ -115,8 +114,7 @@ class TestRayInitialization:
             if not ray.is_initialized():
                 ray.init(
                     object_store_memory=config.pipeline.object_store_memory,
-                    ignore_reinit_error=True,
-                    logging_level=getattr(logging, getattr(config, 'log_level', 'ERROR'), logging.ERROR)  # 使用配置文件中的日志级别
+                    ignore_reinit_error=True
                 )
                 init_time = time.time() - start_time
                 print(f"Ray初始化成功，耗时: {init_time:.2f}秒")
@@ -705,8 +703,7 @@ class TestMonitoringSystemInteraction:
                 start_time = time.time()
                 ray.init(
                     object_store_memory=config.pipeline.object_store_memory,
-                    ignore_reinit_error=True,
-                    logging_level=getattr(logging, getattr(config, 'log_level', 'ERROR'), logging.ERROR)  # 使用配置文件中的日志级别
+                    ignore_reinit_error=True
                 )
                 ray_init_time = time.time() - start_time
                 print(f"Ray初始化成功，耗时: {ray_init_time:.2f}秒")
