@@ -254,12 +254,12 @@ class FileWriter:
 
 
 class AsyncResultWriter:
-    """Async result writer with buffering"""
+    """同步结果写入器（为Ray环境优化）"""
     
     def __init__(self, 
                  config: WriteConfig,
                  storage_manager: Optional[MediaStorageManager] = None):
-        """初始化异步结果写入器
+        """初始化同步结果写入器
         
         Args:
             config: 写入配置
@@ -269,10 +269,8 @@ class AsyncResultWriter:
         self.storage_manager = storage_manager
         self.buffer = ResultBuffer(config.batch_size)
         self.file_writer = FileWriter(config)
-        self.executor = ThreadPoolExecutor(max_workers=4)
-        self.write_queue = asyncio.Queue()
+        # 移除线程池，使用同步处理
         self.running = False
-        self.writer_task = None
         
         # Statistics
         self.stats = {
@@ -282,17 +280,16 @@ class AsyncResultWriter:
             'last_flush': time.time()
         }
         
-    async def start(self) -> None:
-        """Start the async writer"""
+    def start(self) -> None:
+        """Start the writer (同步版本)"""
         if self.running:
             return
             
         self.running = True
-        self.writer_task = asyncio.create_task(self._writer_loop())
-        logger.info("AsyncResultWriter started")
+        logger.info("AsyncResultWriter started (synchronous version)")
         
-    async def stop(self) -> None:
-        """Stop the async writer"""
+    def stop(self) -> None:
+        """Stop the writer (同步版本)"""
         if not self.running:
             return
             
@@ -301,16 +298,11 @@ class AsyncResultWriter:
         # Flush remaining items
         remaining = self.buffer.flush()
         if remaining:
-            await self._write_batch(remaining)
+            self._write_batch(remaining)
         
-        # Wait for writer task to complete
-        if self.writer_task:
-            await self.writer_task
-            
-        self.executor.shutdown(wait=True)
         logger.info("AsyncResultWriter stopped")
         
-    async def write_item(self, item: Dict[str, Any]) -> None:
+    def write_item(self, item: Dict[str, Any]) -> None:
         """Write a single item"""
         if not self.running:
             raise RuntimeError("Writer not started")
@@ -320,9 +312,9 @@ class AsyncResultWriter:
         # Trigger write if buffer is full
         if self.buffer.size() >= self.config.batch_size:
             batch = self.buffer.get_batch()
-            await self._write_batch(batch)
+            self._write_batch(batch)
     
-    async def write_batch(self, items: List[Dict[str, Any]]) -> None:
+    def write_batch(self, items: List[Dict[str, Any]]) -> None:
         """Write a batch of items"""
         if not self.running:
             raise RuntimeError("Writer not started")
@@ -332,35 +324,14 @@ class AsyncResultWriter:
             
         # Trigger write
         batch = self.buffer.get_batch()
-        await self._write_batch(batch)
+        self._write_batch(batch)
     
-    async def _writer_loop(self) -> None:
-        """Main writer loop"""
-        last_flush = time.time()
-        
-        while self.running:
-            try:
-                # Check if it's time to flush
-                current_time = time.time()
-                time_since_flush = current_time - last_flush
-                
-                if time_since_flush >= self.config.flush_interval:
-                    # Flush buffer regardless of size
-                    batch = self.buffer.flush()
-                    if batch:
-                        await self._write_batch(batch)
-                    last_flush = current_time
-                
-                # Sleep a bit to avoid busy waiting
-                await asyncio.sleep(0.1)
-                
-            except Exception as e:
-                logger.error(f"Error in writer loop: {e}", exc_info=True)
-                self.stats['errors'] += 1
-                await asyncio.sleep(1)
+    def _writer_loop(self) -> None:
+        """同步写入循环（为兼容性保留，但不使用）"""
+        pass
     
-    async def _write_batch(self, batch: List[Dict[str, Any]]) -> None:
-        """Write a batch of data"""
+    def _write_batch(self, batch: List[Dict[str, Any]]) -> None:
+        """Write a batch of data (同步版本)"""
         if not batch:
             return
             
@@ -371,12 +342,7 @@ class AsyncResultWriter:
             
             # Write to temporary file first
             temp_file = f"/tmp/{filename}"
-            success = await asyncio.get_event_loop().run_in_executor(
-                self.executor,
-                self.file_writer.write_data,
-                batch,
-                temp_file
-            )
+            success = self.file_writer.write_data(batch, temp_file)
             
             if not success:
                 self.stats['errors'] += 1
@@ -385,21 +351,28 @@ class AsyncResultWriter:
             
             # Upload to storage if configured
             if self.storage_manager and self.config.async_upload:
-                upload_success = await self._upload_to_storage(temp_file, filename)
+                upload_success = self._upload_to_storage_sync(temp_file, filename)
                 if upload_success:
                     # Remove temp file after successful upload
-                    Path(temp_file).unlink(missing_ok=True)
-                    logger.debug(f"Uploaded and cleaned up {temp_file}")
+                    try:
+                        os.remove(temp_file)
+                    except OSError:
+                        pass  # Ignore if file doesn't exist
+            else:
+                # Direct upload without temporary file
+                if self.storage_manager:
+                    upload_success = self._upload_to_storage_sync(temp_file, filename)
+                    if upload_success:
+                        try:
+                            os.remove(temp_file)
+                        except OSError:
+                            pass  # Ignore if file doesn't exist
                 else:
-                    self.stats['errors'] += 1
-                    logger.warning(f"Upload failed, keeping local file: {temp_file}")
+                    # No storage configured, keep temp file
+                    pass
             
-            # Update statistics
             self.stats['items_written'] += len(batch)
             self.stats['files_written'] += 1
-            self.stats['last_flush'] = time.time()
-            
-            logger.info(f"Wrote {len(batch)} items to {filename}")
             
         except Exception as e:
             logger.error(f"Error writing batch: {e}", exc_info=True)
@@ -429,6 +402,34 @@ class AsyncResultWriter:
                     delay = self.config.retry_delay * (2 ** attempt)
                     logger.warning(f"Upload failed, retrying in {delay}s... (attempt {attempt + 1}/{self.config.retry_attempts})")
                     await asyncio.sleep(delay)
+            
+            logger.error(f"Upload failed after {self.config.retry_attempts} attempts")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error uploading to storage: {e}", exc_info=True)
+            return False
+    
+    def _upload_to_storage_sync(self, local_file: str, remote_filename: str) -> bool:
+        """Upload file to storage (同步版本)"""
+        if not self.storage_manager:
+            return True
+            
+        try:
+            # Upload with retry logic
+            for attempt in range(self.config.retry_attempts):
+                batch_id = Path(remote_filename).stem
+                # 直接调用存储管理器的方法，不使用线程池
+                success = self.storage_manager.upload_batch_results(local_file, batch_id)
+                
+                if success:
+                    logger.info(f"Uploaded {remote_filename} to storage")
+                    return True
+                    
+                if attempt < self.config.retry_attempts - 1:
+                    delay = self.config.retry_delay * (2 ** attempt)
+                    logger.warning(f"Upload failed, retrying in {delay}s... (attempt {attempt + 1}/{self.config.retry_attempts})")
+                    time.sleep(delay)
             
             logger.error(f"Upload failed after {self.config.retry_attempts} attempts")
             return False
@@ -838,7 +839,7 @@ class SegmentUploadConfig:
     retry_delay: float = 1.0
 
 class OptimizedResultWriter:
-    """优化的结果写入器 - 内存直传 + 批量聚合 + 分片并发"""
+    """优化的结果写入器 - 内存直传 + 批量聚合（同步版本，避免Ray中的多线程冲突）"""
     
     def __init__(self, 
                  config: OptimizedWriteConfig,
@@ -855,9 +856,7 @@ class OptimizedResultWriter:
         self.upload_speeds: List[float] = []
         self.last_adjust_time = time.time()
         
-        self.executor = ThreadPoolExecutor(max_workers=config.max_concurrent_parts)
-        self.lock = threading.Lock()
-        
+        # 移除多线程部分，使用同步上传
         self.stats = {
             'items_written': 0,
             'bytes_uploaded': 0,
@@ -868,18 +867,17 @@ class OptimizedResultWriter:
         
     def write_batch(self, items: List[Dict[str, Any]]) -> bool:
         """批量写入"""
-        with self.lock:
-            for item in items:
-                serialized = self._serialize_item(item)
-                item_size = len(serialized.encode('utf-8'))
-                
-                self.buffer.append(item)
-                self.buffer_size_bytes += item_size
-                
-                if self.buffer_size_bytes >= self.current_buffer_limit or len(self.buffer) >= self.config.batch_size:
-                    self._flush_buffer()
+        for item in items:
+            serialized = self._serialize_item(item)
+            item_size = len(serialized.encode('utf-8'))
             
-            return True
+            self.buffer.append(item)
+            self.buffer_size_bytes += item_size
+            
+            if self.buffer_size_bytes >= self.current_buffer_limit or len(self.buffer) >= self.config.batch_size:
+                self._flush_buffer()
+        
+        return True
     
     def _serialize_item(self, item: Dict[str, Any]) -> str:
         """序列化"""
@@ -960,7 +958,7 @@ class OptimizedResultWriter:
             return False
     
     def _multipart_upload(self, content: io.BytesIO, filename: str, total_size: int) -> bool:
-        """分片上传"""
+        """分片上传 - 同步版本"""
         try:
             oss_client = self.storage_manager.get_output_client()
             key = f"{self.storage_manager.output_result_prefix}{filename}"
@@ -973,31 +971,28 @@ class OptimizedResultWriter:
             
             content.seek(0)
             part_number = 1
-            futures = []
             
             while True:
                 chunk = content.read(part_size)
                 if not chunk:
                     break
                 
-                future = self.executor.submit(
-                    self._upload_part,
+                # 同步上传分片
+                result = self._upload_part_sync(
                     oss_client.bucket,
                     key,
                     upload_id,
                     part_number,
                     chunk
                 )
-                futures.append((part_number, future))
-                part_number += 1
-            
-            for part_num, future in futures:
-                result = future.result()
+                
                 if result:
-                    parts.append(oss2.models.PartInfo(part_num, result))
+                    parts.append(oss2.models.PartInfo(part_number, result))
                 else:
                     oss_client.bucket.abort_multipart_upload(key, upload_id)
                     return False
+                
+                part_number += 1
             
             oss_client.bucket.complete_multipart_upload(key, upload_id, parts)
             logger.info(f"Multipart upload: {len(parts)} parts")
@@ -1007,8 +1002,8 @@ class OptimizedResultWriter:
             logger.error(f"Multipart upload failed: {e}", exc_info=True)
             return False
     
-    def _upload_part(self, bucket, key: str, upload_id: str, part_number: int, data: bytes) -> Optional[str]:
-        """上传分片"""
+    def _upload_part_sync(self, bucket, key: str, upload_id: str, part_number: int, data: bytes) -> Optional[str]:
+        """上传分片 - 同步版本"""
         try:
             result = bucket.upload_part(key, upload_id, part_number, data)
             return result.etag
@@ -1049,13 +1044,12 @@ class OptimizedResultWriter:
     
     def flush(self) -> bool:
         """手动刷新"""
-        with self.lock:
-            return self._flush_buffer()
+        return self._flush_buffer()
     
     def close(self) -> None:
         """关闭"""
         self.flush()
-        self.executor.shutdown(wait=True)
+        # 无需关闭线程池，因为现在使用同步上传
     
     def get_stats(self) -> Dict[str, Any]:
         """统计"""
@@ -1063,14 +1057,14 @@ class OptimizedResultWriter:
 
 
 class AudioSegmentUploader:
-    """音频片段上传管理器"""
+    """音频片段上传管理器（同步版本）"""
     
     def __init__(self, 
                  config: SegmentUploadConfig,
                  storage_manager: MediaStorageManager):
         self.config = config
         self.storage_manager = storage_manager
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        # 移除线程池，使用同步处理
         
         # 为元数据创建独立的优化写入器
         self.metadata_writer = OptimizedResultWriter(
@@ -1096,7 +1090,7 @@ class AudioSegmentUploader:
             'audio_bytes_uploaded': 0,
             'errors': 0
         }
-        self.lock = threading.Lock()
+        # 移除锁，因为现在是同步处理
     
     def upload_segment(self, 
                       segment_audio: np.ndarray, 
@@ -1153,10 +1147,10 @@ class AudioSegmentUploader:
         return self.metadata_writer.flush()
     
     def close(self):
-        """关闭上传器"""
+        """关闭上传器（同步版本）"""
         self.flush()
         self.metadata_writer.close()
-        self.executor.shutdown(wait=True)
+        # 无需关闭线程池，因为现在使用同步处理
     
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
@@ -1164,7 +1158,7 @@ class AudioSegmentUploader:
         return {**self.stats, **metadata_stats}
 
 class OptimizedResultWriterStage:
-    """优化的结果写入Stage"""
+    """优化的结果写入Stage - 与流式管道兼容"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -1201,6 +1195,7 @@ class OptimizedResultWriterStage:
         )
         
         self.logger = logging.getLogger(f"OptimizedResultWriterStage-{worker_id}")
+        self._closed = False  # 添加关闭标志
     
     def process(self, batch: BatchData) -> BatchData:
         """处理batch"""
@@ -1229,12 +1224,15 @@ class OptimizedResultWriterStage:
             return batch
     
     def cleanup(self):
-        """清理"""
-        try:
-            self.writer.close()
-            self.logger.info("Writer closed")
-        except Exception as e:
-            self.logger.error(f"Cleanup error: {e}")
+        """清理 - 确保只清理一次"""
+        if not self._closed:
+            try:
+                self.writer.flush()  # 确保所有缓冲数据都写入
+                self.writer.close()
+                self.logger.info("Writer closed")
+                self._closed = True
+            except Exception as e:
+                self.logger.error(f"Cleanup error: {e}")
     
     def get_stats(self) -> Dict[str, Any]:
         """统计"""

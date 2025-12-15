@@ -1,16 +1,14 @@
 # src/storage/result_writer.py 末尾添加优化实现
 
-"""Optimized async result writing with memory streaming and concurrent uploads"""
+"""Optimized result writing with memory streaming and batch uploads (sync version)"""
 
 import io
 import json
 import time
 import logging
-import threading
 import uuid
 from pathlib import Path
 from typing import Dict, List, Any, Optional
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import oss2
@@ -37,7 +35,7 @@ class OptimizedWriteConfig:
 
 
 class OptimizedResultWriter:
-    """优化的结果写入器 - 内存直传 + 批量聚合 + 分片并发"""
+    """优化的结果写入器 - 内存直传 + 批量聚合（同步版本，避免Ray中的多线程冲突）"""
     
     def __init__(self, 
                  config: OptimizedWriteConfig,
@@ -54,9 +52,7 @@ class OptimizedResultWriter:
         self.upload_speeds: List[float] = []
         self.last_adjust_time = time.time()
         
-        self.executor = ThreadPoolExecutor(max_workers=config.max_concurrent_parts)
-        self.lock = threading.Lock()
-        
+        # 移除多线程部分，使用同步上传
         self.stats = {
             'items_written': 0,
             'bytes_uploaded': 0,
@@ -159,7 +155,7 @@ class OptimizedResultWriter:
             return False
     
     def _multipart_upload(self, content: io.BytesIO, filename: str, total_size: int) -> bool:
-        """分片上传"""
+        """分片上传 - 同步版本"""
         try:
             oss_client = self.storage_manager.get_output_client()
             key = f"{self.storage_manager.output_result_prefix}{filename}"
@@ -172,31 +168,28 @@ class OptimizedResultWriter:
             
             content.seek(0)
             part_number = 1
-            futures = []
             
             while True:
                 chunk = content.read(part_size)
                 if not chunk:
                     break
                 
-                future = self.executor.submit(
-                    self._upload_part,
+                # 同步上传分片
+                result = self._upload_part_sync(
                     oss_client.bucket,
                     key,
                     upload_id,
                     part_number,
                     chunk
                 )
-                futures.append((part_number, future))
-                part_number += 1
-            
-            for part_num, future in futures:
-                result = future.result()
+                
                 if result:
-                    parts.append(oss2.models.PartInfo(part_num, result))
+                    parts.append(oss2.models.PartInfo(part_number, result))
                 else:
                     oss_client.bucket.abort_multipart_upload(key, upload_id)
                     return False
+                
+                part_number += 1
             
             oss_client.bucket.complete_multipart_upload(key, upload_id, parts)
             logger.info(f"Multipart upload: {len(parts)} parts")
@@ -206,8 +199,8 @@ class OptimizedResultWriter:
             logger.error(f"Multipart upload failed: {e}", exc_info=True)
             return False
     
-    def _upload_part(self, bucket, key: str, upload_id: str, part_number: int, data: bytes) -> Optional[str]:
-        """上传分片"""
+    def _upload_part_sync(self, bucket, key: str, upload_id: str, part_number: int, data: bytes) -> Optional[str]:
+        """上传分片 - 同步版本"""
         try:
             result = bucket.upload_part(key, upload_id, part_number, data)
             return result.etag
@@ -248,13 +241,12 @@ class OptimizedResultWriter:
     
     def flush(self) -> bool:
         """手动刷新"""
-        with self.lock:
-            return self._flush_buffer()
+        return self._flush_buffer()
     
     def close(self) -> None:
         """关闭"""
         self.flush()
-        self.executor.shutdown(wait=True)
+        # 无需关闭线程池，因为现在使用同步上传
     
     def get_stats(self) -> Dict[str, Any]:
         """统计"""
@@ -262,7 +254,7 @@ class OptimizedResultWriter:
 
 
 class OptimizedResultWriterStage:
-    """优化的结果写入Stage"""
+    """优化的结果写入Stage - 与流式管道兼容"""
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -299,6 +291,7 @@ class OptimizedResultWriterStage:
         )
         
         self.logger = logging.getLogger(f"OptimizedResultWriterStage-{worker_id}")
+        self._closed = False  # 添加关闭标志
     
     def process(self, batch: BatchData) -> BatchData:
         """处理batch"""
@@ -327,12 +320,15 @@ class OptimizedResultWriterStage:
             return batch
     
     def cleanup(self):
-        """清理"""
-        try:
-            self.writer.close()
-            self.logger.info("Writer closed")
-        except Exception as e:
-            self.logger.error(f"Cleanup error: {e}")
+        """清理 - 确保只清理一次"""
+        if not self._closed:
+            try:
+                self.writer.flush()  # 确保所有缓冲数据都写入
+                self.writer.close()
+                self.logger.info("Writer closed")
+                self._closed = True
+            except Exception as e:
+                self.logger.error(f"Cleanup error: {e}")
     
     def get_stats(self) -> Dict[str, Any]:
         """统计"""

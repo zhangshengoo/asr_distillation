@@ -1,11 +1,10 @@
-"""Batch media processor for efficient media handling"""
+"""Batch media processor for efficient media handling (同步版本)"""
 
 import asyncio
 import hashlib
 import time
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 import pickle
 import os
@@ -209,7 +208,7 @@ class MediaCache:
 
 
 class BatchMediaProcessor:
-    """Efficient batch media processor with caching and parallel processing"""
+    """Efficient batch media processor with caching - 同步版本"""
     
     def __init__(self, config: MediaConfig, cache_config: Optional[CacheConfig] = None):
         self.config = config
@@ -221,8 +220,8 @@ class BatchMediaProcessor:
             cache_config = CacheConfig()
         self.cache = MediaCache(cache_config)
         
-        # Thread pool for parallel processing
-        self.executor = ThreadPoolExecutor(max_workers=config.ffmpeg_num_workers)
+        # 移除线程池，使用同步处理
+        # self.executor = ThreadPoolExecutor(max_workers=config.ffmpeg_num_workers)
         
         # Statistics
         self.stats = {
@@ -304,23 +303,15 @@ class BatchMediaProcessor:
         return cached_results, pending_items
     
     def _process_pending_items(self, media_items: List[MediaItem]) -> List[AudioData]:
-        """Process items that are not in cache"""
+        """Process items that are not in cache - 同步版本"""
         if not media_items:
             return []
         
-        # Submit all tasks to thread pool
-        future_to_item = {}
-        for item in media_items:
-            future = self.executor.submit(self._process_single_item, item)
-            future_to_item[future] = item
-        
-        # Collect results
+        # 同步处理所有项目
         results = []
-        for future in as_completed(future_to_item):
-            item = future_to_item[future]
-            
+        for item in media_items:
             try:
-                audio_data = future.result()
+                audio_data = self._process_single_item(item)
                 results.append(audio_data)
                 
                 # Cache the result
@@ -388,8 +379,7 @@ class BatchMediaProcessor:
         }
     
     def cleanup(self):
-        """Cleanup resources"""
-        self.executor.shutdown(wait=True)
+        """Cleanup resources - 同步版本无需关闭线程池"""
         self.cache._save_index()
 
 

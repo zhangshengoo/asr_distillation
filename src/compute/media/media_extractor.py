@@ -1,4 +1,4 @@
-"""Media extractor for audio and video files"""
+"""Media extractor for audio and video files - 同步版本"""
 
 import os
 import subprocess
@@ -6,7 +6,6 @@ import tempfile
 import asyncio
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 import ffmpeg
@@ -16,12 +15,12 @@ from src.config.manager import MediaConfig
 
 
 class MediaExtractor:
-    """Unified media extraction interface using FFmpeg"""
+    """Unified media extraction interface using FFmpeg - 同步版本"""
     
     def __init__(self, config: MediaConfig):
         self.config = config
         self.detector = MediaDetector()
-        self.executor = ThreadPoolExecutor(max_workers=config.ffmpeg_num_workers)
+        # 移除线程池，使用同步处理
         
         # FFmpeg quality presets
         self.quality_settings = {
@@ -236,16 +235,10 @@ class MediaExtractor:
         size_mb = len(file_bytes) / (1024 * 1024)
         return size_mb <= self.config.max_file_size_mb
     
-    async def extract_audio_async(self, media_bytes: bytes, media_info: MediaInfo) -> bytes:
-        """Async version of extract_audio"""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            self.executor, 
-            self.extract_audio, 
-            media_bytes, 
-            media_info
-        )
+    def extract_audio_sync(self, media_bytes: bytes, media_info: MediaInfo) -> bytes:
+        """Synchronous version of extract_audio - 直接调用extract_audio方法"""
+        return self.extract_audio(media_bytes, media_info)
     
     def cleanup(self):
-        """Cleanup resources"""
-        self.executor.shutdown(wait=True)
+        """Cleanup resources - 同步版本无需特殊清理"""
+        pass
