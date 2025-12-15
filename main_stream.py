@@ -5,6 +5,8 @@ import signal
 import sys
 import time
 import logging
+import threading
+import psutil
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +39,24 @@ monitoring_system = None
 shutdown_requested = False
 
 
+def log_system_resources(logger, prefix="System"):
+    """记录系统资源使用情况"""
+    try:
+        current_process = psutil.Process()
+        num_threads = current_process.num_threads()
+        memory_info = current_process.memory_info()
+        cpu_percent = current_process.cpu_percent()
+        
+        logger.info(f"[{prefix}] Threads: {num_threads}, Memory RSS: {memory_info.rss / 1024 / 1024:.2f}MB, CPU: {cpu_percent}%")
+        
+        # 记录系统整体信息
+        total_threads = threading.active_count()
+        logger.info(f"[{prefix}] Total active threads: {total_threads}")
+        
+    except Exception as e:
+        logger.error(f"Error getting system resources: {e}")
+
+
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
     """配置简洁的日志系统"""
     logger = logging.getLogger("asr_distillation")
@@ -67,6 +87,9 @@ async def run_pipeline(config_path: str,
     
     logger = setup_logging(log_level)
     
+    # 记录初始系统资源
+    log_system_resources(logger, "INIT")
+    
     try:
         # 1. 加载配置
         logger.info("Loading configuration...")
@@ -80,21 +103,26 @@ async def run_pipeline(config_path: str,
         # 2. 初始化Ray
         if not ray.is_initialized():
             logger.info("Initializing Ray cluster...")
+            log_system_resources(logger, "RAY_INIT_START")
             ray.init(
                 object_store_memory=config.pipeline.object_store_memory,
                 ignore_reinit_error=True,
                 logging_level=logging.ERROR  # 抑制Ray日志
             )
+            log_system_resources(logger, "RAY_INIT_END")
         
         # 3. 初始化监控系统
         logger.info("Starting monitoring system...")
+        log_system_resources(logger, "MONITOR_START")
         from src.config.manager import MonitoringConfig
         monitoring_config = MonitoringConfig(**config.monitoring.__dict__)
         monitoring_system = MonitoringSystem(monitoring_config)
         monitoring_system.start()
+        log_system_resources(logger, "MONITOR_END")
         
         # 4. 初始化Pipeline
         logger.info("Setting up streaming pipeline...")
+        log_system_resources(logger, "PIPELINE_SETUP_START")
         pipeline_config = {
             'pipeline': config.pipeline.__dict__,
             'data': config.data.__dict__
@@ -220,6 +248,7 @@ async def run_pipeline(config_path: str,
         ]
         
         pipeline_orchestrator.setup_multi_stage_pipeline(stages_config)
+        log_system_resources(logger, "PIPELINE_SETUP_END")
         
         # 6. ❌ 移除：不再单独初始化 ResultWriter
         # result_writer = ResultWriterStage({...})
@@ -227,13 +256,14 @@ async def run_pipeline(config_path: str,
         
         # 7. 进度回调
         def progress_callback(current: int, queue_stats: dict):
-            pass
-            #if current % 100 == 0:  # 每100次更新打印一次
-                #logger.info(f"Progress: {current} items processed")
+            # 每处理一定数量的项目记录一次系统资源
+            if current % 10 == 0:  # 每10个项目记录一次
+                log_system_resources(logger, "PROGRESS")
         
         # 8. 运行Pipeline
         logger.info("Starting pipeline execution...")
         start_time = time.time()
+        log_system_resources(logger, "PIPELINE_START")
         
         stats = pipeline_orchestrator.run(
             max_batches=max_batches,
@@ -242,6 +272,7 @@ async def run_pipeline(config_path: str,
         )
         
         duration = time.time() - start_time
+        log_system_resources(logger, "PIPELINE_END")
         
         # 9. 打印执行摘要
         logger.info("=" * 60)
@@ -275,6 +306,7 @@ async def cleanup(logger: logging.Logger):
     global pipeline_orchestrator, monitoring_system
     
     logger.info("Cleaning up resources...")
+    log_system_resources(logger, "CLEANUP_START")
     
     # ❌ 移除：result_writer 清理
     # if result_writer:
@@ -298,6 +330,7 @@ async def cleanup(logger: logging.Logger):
         except Exception as e:
             logger.error(f"Error shutting down Ray: {e}")
     
+    log_system_resources(logger, "CLEANUP_END")
     logger.info("Cleanup completed")
 
 
