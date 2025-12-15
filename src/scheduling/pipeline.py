@@ -135,9 +135,11 @@ class DistributedPipeline:
         
         # Initialize Ray if not already initialized
         if not ray.is_initialized():
+            import logging
             ray.init(
                 object_store_memory=config.object_store_memory,
-                ignore_reinit_error=True
+                ignore_reinit_error=True,
+                logging_level=getattr(logging, getattr(config, 'log_level', 'ERROR'), logging.ERROR)  # 使用配置文件中的日志级别
             )
     
     def setup_producer(self, data_loader_config: Dict[str, Any]) -> None:

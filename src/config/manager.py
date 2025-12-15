@@ -323,6 +323,9 @@ class SegmentExpansionConfig:
 @dataclass
 class ASRDistillationConfig:
     """ASR蒸馏框架主配置类 - 整合所有子模块配置"""
+    # 全局日志级别配置
+    log_level: str = "INFO"
+    
     # 数据层配置，管理音频数据索引、缓存和存储
     data: DataConfig = field(default_factory=DataConfig)
     
