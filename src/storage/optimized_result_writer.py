@@ -295,6 +295,11 @@ class OptimizedResultWriterStage:
     
     def process(self, batch: BatchData) -> BatchData:
         """处理batch"""
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"OptimizedResultWriterStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         try:
             results = []
             for item in batch.items:
@@ -312,6 +317,9 @@ class OptimizedResultWriterStage:
             
             batch.metadata['stage'] = 'optimized_result_writer'
             batch.metadata['results_written'] = len(results)
+            
+            current_process = psutil.Process()
+            self.logger.info(f"OptimizedResultWriterStage completed batch {batch.batch_id}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
             return batch
             
         except Exception as e:
