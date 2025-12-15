@@ -88,6 +88,11 @@ class VADProcessingStage(PipelineStage):
 
     def process(self, batch: BatchData[TensorItem]) -> BatchData[TensorItem]:
         """处理音频批次"""
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"VADProcessingStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         start_time = time.time()
         
         # 使用 map 处理
@@ -100,6 +105,9 @@ class VADProcessingStage(PipelineStage):
              'stage': 'vad_processing',
              'processing_time': self.stats['processing_time']
         })
+        
+        current_process = psutil.Process()
+        self.logger.info(f"VADProcessingStage completed batch {batch.batch_id}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
         
         return new_batch
     

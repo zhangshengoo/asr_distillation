@@ -187,12 +187,21 @@ class AudioDownloadStage(PipelineStage):
         
     def process(self, batch: BatchData[SourceItem]) -> BatchData[RawAudioItem]:
         """Download and process audio/multimedia files for batch"""
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"AudioDownloadStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         if self.enable_multimedia:
             # Use multimedia processing pipeline
-            return self._process_multimedia_batch(batch)
+            result = self._process_multimedia_batch(batch)
         else:
             # Use original audio-only pipeline
-            return self._process_audio_batch(batch)
+            result = self._process_audio_batch(batch)
+        
+        current_process = psutil.Process()
+        self.logger.info(f"AudioDownloadStage completed batch {batch.batch_id}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        return result
     
     def _process_audio_batch(self, batch: BatchData) -> BatchData:
         """Process audio-only batch"""
@@ -407,7 +416,16 @@ class AudioPreprocessingStage(PipelineStage):
 
     def process(self, batch: BatchData[RawAudioItem]) -> BatchData[TensorItem]:
         """Preprocess audio and convert to tensors"""
-        return batch.map(self._preprocess_item, new_batch_id=f"{batch.batch_id}_preprocessed")
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"AudioPreprocessingStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
+        result = batch.map(self._preprocess_item, new_batch_id=f"{batch.batch_id}_preprocessed")
+        
+        current_process = psutil.Process()
+        self.logger.info(f"AudioPreprocessingStage completed batch {batch.batch_id}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        return result
 
 
 class AudioFeatureExtractor:
@@ -496,6 +514,15 @@ class AudioFeatureStage(PipelineStage):
 
     def process(self, batch: BatchData[SegmentItem]) -> BatchData[SegmentItem]:
         """Prepare audio data for Qwen3-Omni model"""
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"AudioFeatureStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         # This stage effectively might just be a NOP or validation for Qwen3-Omni
         # if the model takes raw waveforms which are already in SegmentItems.
-        return batch.map(self._prepare_item, new_batch_id=f"{batch.batch_id}_features")
+        result = batch.map(self._prepare_item, new_batch_id=f"{batch.batch_id}_features")
+        
+        current_process = psutil.Process()
+        self.logger.info(f"AudioFeatureStage completed batch {batch.batch_id}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        return result

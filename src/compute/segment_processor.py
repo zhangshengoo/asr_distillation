@@ -224,6 +224,11 @@ class SegmentExpansionStage(PipelineStage):
     
     def process(self, batch: BatchData[TensorItem]) -> BatchData[SegmentItem]:
         """处理批次数据，展开为segment级别"""
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"SegmentExpansionStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         start_time = time.time()
         
         # 使用flat_map展开segments
@@ -241,6 +246,9 @@ class SegmentExpansionStage(PipelineStage):
             'expanded_batch_size': len(new_batch.items),
             'expansion_ratio': len(new_batch.items) / len(batch.items) if batch.items else 0
         })
+        
+        current_process = psutil.Process()
+        self.logger.info(f"SegmentExpansionStage completed batch {batch.batch_id}, Expanded to {len(new_batch.items)} segments, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
         
         return new_batch
     
@@ -410,6 +418,11 @@ class SegmentAggregationStage(PipelineStage):
     
     def process(self, batch: BatchData[InferenceItem]) -> BatchData[FileResultItem]:
         """处理批次数据，聚合到文件级别"""
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"SegmentAggregationStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         start_time = time.time()
         
         # 使用group_by按文件ID分组
@@ -441,6 +454,9 @@ class SegmentAggregationStage(PipelineStage):
                 'total_segments': self.stats['total_segments']
             }
         )
+        
+        current_process = psutil.Process()
+        self.logger.info(f"SegmentAggregationStage completed batch {batch.batch_id}, Aggregated to {len(aggregated_items)} files, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
         
         return new_batch
     

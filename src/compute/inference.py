@@ -278,11 +278,21 @@ class BatchInferenceStage(PipelineStage):
 
     def process(self, batch: BatchData[SegmentItem]) -> BatchData[InferenceItem]:
         """Sync wrapper for compatibility with persistent loop"""
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"BatchInferenceStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         if self._sync_loop is None:
             self._sync_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._sync_loop)
             
-        return self._sync_loop.run_until_complete(self.process_async(batch))
+        result = self._sync_loop.run_until_complete(self.process_async(batch))
+        
+        current_process = psutil.Process()
+        self.logger.info(f"BatchInferenceStage completed batch {batch.batch_id}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
+        return result
         
     def cleanup(self):
         """Cleanup resources"""
@@ -302,6 +312,11 @@ class PostProcessingStage(PipelineStage):
         
     def process(self, batch: BatchData[FileResultItem]) -> BatchData[FileResultItem]:
         """Post-process inference results"""
+        import psutil
+        import threading
+        current_process = psutil.Process()
+        self.logger.info(f"PostProcessingStage processing batch {batch.batch_id}, Items: {len(batch.items)}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
         processed_items = []
         
         for item in batch.items:
@@ -343,3 +358,8 @@ class PostProcessingStage(PipelineStage):
             items=processed_items,
             metadata={**batch.metadata, 'stage': 'post_processing'}
         )
+        
+        current_process = psutil.Process()
+        self.logger.info(f"PostProcessingStage completed batch {batch.batch_id}, Threads: {current_process.num_threads()}, Active: {threading.active_count()}")
+        
+        return new_batch
