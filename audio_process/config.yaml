@@ -1,0 +1,104 @@
+data:
+  index_path: "./data/index"
+  cache_dir: "./data/cache"
+  cache_size_gb: 100.0
+  webdataset_output_dir: "./data/webdataset"
+  shard_size_mb: 100
+  input_storage:
+    bucket: "your-input-bucket-name"
+    endpoint: "https://oss-cn-beijing.aliyuncs.com"
+    access_key_id: "your-access-key-id"
+    access_key_secret: "your-access-key-secret"
+    audio_prefix: "audio/"
+    video_prefix: "video/"
+  output_storage:
+    bucket: "your-output-bucket-name"
+    endpoint: "https://oss-cn-beijing.aliyuncs.com"
+    access_key_id: "your-access-key-id"
+    access_key_secret: "your-access-key-secret"
+    result_prefix: "results/"
+
+pipeline:
+  num_cpu_workers: 10
+  num_gpu_workers: 1
+  batch_size: 32
+  max_concurrent_batches: 4
+  object_store_memory: 1073741824
+  checkpoint_interval: 1000
+  cpu_worker_resources:
+    num_cpus: 1
+  gpu_worker_resources:
+    num_cpus: 1
+    num_gpus: 1
+  stage_workers:
+    audio_download: 8
+    audio_preprocessing: 6
+    vad_processing: 4
+    segment_expansion: 4
+    feature_extraction: 6
+    batch_inference: 1
+    segment_aggregation: 2
+    post_processing: 2
+    result_writer: 1
+  gpu_allocation:
+    strategy: "custom"
+    nodes:
+      - node_id: 0
+        gpus: [0]
+        workers: [0]
+
+media:
+  target_sample_rate: 16000
+  target_channels: 1
+  target_format: "wav"
+  ffmpeg_num_workers: 4
+  ffmpeg_timeout: 300
+  ffmpeg_quality: "high"
+  cache_enable: true
+  cache_max_size_gb: 50
+  cache_ttl_hours: 24
+  chunk_size: 1048576
+  max_file_size_mb: 500
+
+vad:
+  model_path: "silero_vad.onnx"
+  sampling_rate: 16000
+  threshold: 0.25
+  neg_threshold: 0.1
+  min_speech_duration_ms: 500
+  min_silence_duration_ms: 8000
+  speech_pad_ms: 1000
+  batch_size: 32
+  cache_enabled: true
+  cache_dir: "./cache/vad"
+  cache_max_size_gb: 10.0
+  cache_ttl_hours: 24
+  parallel_workers: 8
+
+audio:
+  target_sample_rate: 16000
+  max_duration: 30.0
+  normalize: true
+  remove_silence: false
+  audio_format: "wav"
+  features:
+    feature_type: "mel_spectrogram"
+    sample_rate: 16000
+    n_fft: 400
+    hop_length: 160
+    n_mels: 80
+
+segment_expansion:
+  min_segment_duration: 0.5
+  max_segment_duration: 178
+  segment_threshold: 120
+  resplit_min_speech_ms: 1500
+  resplit_min_silence_ms: 300
+  resplit_threshold: 0.4
+  resplit_neg_threshold: 0.15
+  resplit_speech_pad_ms: 100
+
+segment_upload:
+  enable_segment_upload: true
+  audio_segment_prefix: "distillation_data/audio_segments/"
+  max_concurrent_parts: 4  # 文件内并发上传数
