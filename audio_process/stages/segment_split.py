@@ -3,9 +3,9 @@ import numpy as np
 import multiprocessing
 from typing import List, Dict, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from base import Stage
+import torch
+from .base import Stage
 from tools.data_structures import ProcessingItem
-from stages.vad import VADProcessor
 
 # 进程级VAD模型缓存
 _process_vad_models = {}
@@ -14,7 +14,14 @@ _process_vad_models = {}
 def _init_vad_worker(vad_config: dict):
     """初始化工作进程的VAD模型"""
     pid = multiprocessing.current_process().pid
-    _process_vad_models[pid] = VADProcessor(vad_config)
+    model, utils = torch.hub.load(
+        repo_or_dir='snakers4/silero-vad',
+        model='silero_vad',
+        force_reload=False,
+        onnx=False
+    )
+    get_speech_timestamps = utils[0]
+    _process_vad_models[pid] = (model, get_speech_timestamps, vad_config)
 
 
 def _split_segment_worker(seg_data: Tuple[Dict, np.ndarray, int, float, float, dict]) -> List[Dict]:
@@ -22,24 +29,23 @@ def _split_segment_worker(seg_data: Tuple[Dict, np.ndarray, int, float, float, d
     segment, audio_data, sample_rate, max_duration, target_duration, vad_config = seg_data
     
     pid = multiprocessing.current_process().pid
-    vad_processor = _process_vad_models[pid]
+    model, get_speech_timestamps, vad_cfg = _process_vad_models[pid]
     
     seg_audio = audio_data[segment['start_idx']:segment['end_idx']]
     
     try:
-        from silero_vad import get_speech_timestamps
-        
-        speech_timestamps = get_speech_timestamps(
-            seg_audio,
-            vad_processor.model_manager.get_model(),
-            sampling_rate=vad_config['sampling_rate'],
-            min_speech_duration_ms=vad_config['min_speech_duration_ms'],
-            min_silence_duration_ms=vad_config['min_silence_duration_ms'],
-            threshold=vad_config['threshold'],
-            neg_threshold=vad_config['neg_threshold'],
-            speech_pad_ms=vad_config['speech_pad_ms'],
-            return_seconds=False
-        )
+        with torch.no_grad():
+            speech_timestamps = get_speech_timestamps(
+                seg_audio,
+                model,
+                sampling_rate=vad_config['sampling_rate'],
+                min_speech_duration_ms=vad_config['min_speech_duration_ms'],
+                min_silence_duration_ms=vad_config['min_silence_duration_ms'],
+                threshold=vad_config['threshold'],
+                neg_threshold=vad_config['neg_threshold'],
+                speech_pad_ms=vad_config['speech_pad_ms'],
+                return_seconds=False
+            )
         
         if not speech_timestamps:
             return [segment]
@@ -126,18 +132,23 @@ class SegmentSplitStage(Stage):
             'min_silence_duration_ms': 300,
             'threshold': 0.4,
             'neg_threshold': 0.15,
-            'speech_pad_ms': 100,
-            'cache_enabled': False
+            'speech_pad_ms': 100
         }
-        self.fine_vad = None
+        self._local_model = None
+        self._local_utils = None
     
     def name(self) -> str:
         return "segment_split"
     
-    def _ensure_fine_vad(self):
-        """懒加载细VAD模型"""
-        if self.fine_vad is None:
-            self.fine_vad = VADProcessor(self.fine_vad_config)
+    def _ensure_local_model(self):
+        """懒加载本地VAD模型（用于单个处理）"""
+        if self._local_model is None:
+            self._local_model, self._local_utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False,
+                onnx=False
+            )
     
     def process(self, item: ProcessingItem) -> ProcessingItem:
         """检测并切分超长segments"""
@@ -157,7 +168,7 @@ class SegmentSplitStage(Stage):
             return []
         
         # 收集所有需要切分的segments
-        split_tasks = []  # [(item_idx, seg_idx, segment, audio_data, sample_rate)]
+        split_tasks = []
         for item_idx, item in enumerate(items):
             for seg_idx, seg in enumerate(item.segments):
                 if seg['duration'] > self.max_duration:
@@ -184,8 +195,7 @@ class SegmentSplitStage(Stage):
                 for item_idx, seg_idx, seg, audio_data, sample_rate in split_tasks
             }
             
-            # 收集切分结果
-            split_results = {}  # {(item_idx, seg_idx): [new_segments]}
+            split_results = {}
             for future in as_completed(futures):
                 item_idx, seg_idx = futures[future]
                 split_results[(item_idx, seg_idx)] = future.result()
@@ -204,23 +214,24 @@ class SegmentSplitStage(Stage):
     
     def _split_long_segment(self, segment: Dict, item: ProcessingItem) -> List[Dict]:
         """切分超长segment（单个处理时使用）"""
-        self._ensure_fine_vad()
+        self._ensure_local_model()
+        get_speech_timestamps = self._local_utils[0]
+        
         seg_audio = item.audio_data[segment['start_idx']:segment['end_idx']]
         
         try:
-            from silero_vad import get_speech_timestamps
-            
-            speech_timestamps = get_speech_timestamps(
-                seg_audio,
-                self.fine_vad.model_manager.get_model(),
-                sampling_rate=self.fine_vad_config['sampling_rate'],
-                min_speech_duration_ms=self.fine_vad_config['min_speech_duration_ms'],
-                min_silence_duration_ms=self.fine_vad_config['min_silence_duration_ms'],
-                threshold=self.fine_vad_config['threshold'],
-                neg_threshold=self.fine_vad_config['neg_threshold'],
-                speech_pad_ms=self.fine_vad_config['speech_pad_ms'],
-                return_seconds=False
-            )
+            with torch.no_grad():
+                speech_timestamps = get_speech_timestamps(
+                    seg_audio,
+                    self._local_model,
+                    sampling_rate=self.fine_vad_config['sampling_rate'],
+                    min_speech_duration_ms=self.fine_vad_config['min_speech_duration_ms'],
+                    min_silence_duration_ms=self.fine_vad_config['min_silence_duration_ms'],
+                    threshold=self.fine_vad_config['threshold'],
+                    neg_threshold=self.fine_vad_config['neg_threshold'],
+                    speech_pad_ms=self.fine_vad_config['speech_pad_ms'],
+                    return_seconds=False
+                )
             
             if not speech_timestamps:
                 return [segment]
