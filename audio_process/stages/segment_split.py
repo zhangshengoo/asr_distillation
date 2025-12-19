@@ -33,10 +33,16 @@ def _split_segment_worker(seg_data: Tuple[Dict, np.ndarray, int, float, float, d
     
     seg_audio = audio_data[segment['start_idx']:segment['end_idx']]
     
+    # 将numpy数组转换为torch tensor
+    if isinstance(seg_audio, np.ndarray):
+        seg_tensor = torch.from_numpy(seg_audio).float()
+    else:
+        seg_tensor = seg_audio
+    
     try:
         with torch.no_grad():
             speech_timestamps = get_speech_timestamps(
-                seg_audio,
+                seg_tensor,
                 model,
                 sampling_rate=vad_config['sampling_rate'],
                 min_speech_duration_ms=vad_config['min_speech_duration_ms'],

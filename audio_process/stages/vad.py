@@ -32,10 +32,16 @@ def _process_vad_worker(item_data: tuple) -> tuple:
     pid = multiprocessing.current_process().pid
     model, get_speech_timestamps, vad_config = _process_vad_models[pid]
     
+    # 将numpy数组转换为torch tensor
+    if isinstance(audio_data, np.ndarray):
+        audio_tensor = torch.from_numpy(audio_data).float()
+    else:
+        audio_tensor = audio_data
+    
     with torch.no_grad():
         # VAD检测
         speech_timestamps = get_speech_timestamps(
-            audio_data,
+            audio_tensor,
             model,
             sampling_rate=vad_config.get('sampling_rate', 16000),
             return_seconds=True,
