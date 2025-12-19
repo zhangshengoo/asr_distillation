@@ -1,125 +1,118 @@
-"""音频格式转换Stage"""
-import tempfile
-import os
-import subprocess
+"""Segment展开和上传Stage"""
+import io
+import wave
+import numpy as np
 from typing import List
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import torchaudio
-import torch
-from base import Stage
-from tools.data_structures import ProcessingItem
+from .base import ExpandStage
+from ..data_structures import ProcessingItem, SegmentItem
 
 
-class AudioFormatStage(Stage):
-    """音频格式转换：统一为16k采样率，单声道，WAV格式"""
+class SegmentExpandAndUploadStage(ExpandStage):
+    """
+    展开segments并并发上传
+    关键：使用ThreadPoolExecutor实现文件内并发
+    """
     
-    def __init__(self, target_sr: int = 16000, target_channels: int = 1, 
-                 max_workers: int = 8):
-        self.target_sr = target_sr
-        self.target_channels = target_channels
-        self.max_workers = max_workers
+    def __init__(self, storage_manager, config: dict, max_upload_workers: int = 4):
+        self.storage = storage_manager
+        self.config = config
+        self.max_workers = max_upload_workers
+        self.audio_segment_prefix = config.get('audio_segment_prefix', 'audio_segments/')
     
     def name(self) -> str:
-        return "audio_format"
+        return "segment_expand_upload"
     
-    def process(self, item: ProcessingItem) -> ProcessingItem:
-        """转换音频格式"""
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as input_file:
-            input_path = input_file.name
-            input_file.write(item.audio_bytes)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as output_file:
-            output_path = output_file.name
-        
-        try:
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', input_path,
-                '-ar', str(self.target_sr),
-                '-ac', str(self.target_channels),
-                '-f', 'wav',
-                '-loglevel', 'error',
-                output_path
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
-            if result.returncode != 0:
-                raise RuntimeError(f"FFmpeg error: {result.stderr.decode()}")
-            
-            waveform, sample_rate = torchaudio.load(output_path)
-            
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-            item.audio_data = waveform.squeeze(0).numpy()
-            item.sample_rate = sample_rate
-            item.duration = len(item.audio_data) / sample_rate
-            
-            item.audio_bytes = None
-            
-            return item
-            
-        finally:
-            for path in [input_path, output_path]:
-                if os.path.exists(path):
-                    os.unlink(path)
-    
-    def process_batch(self, items: List[ProcessingItem]) -> List[ProcessingItem]:
-        """并行转换批次样本"""
-        if not items:
+    def expand(self, item: ProcessingItem) -> List[SegmentItem]:
+        """展开并并发上传"""
+        if not item.segments:
             return []
         
+        # 1. 创建所有segment items（audio_data是view，不额外占内存）
+        seg_items = self._create_segment_items(item)
+        
+        # 2. 并发上传
+        self._concurrent_upload(seg_items)
+        
+        # 3. ✅ 清理所有segment的audio_data（节省内存）
+        for seg_item in seg_items:
+            seg_item.clear_audio_data()
+        
+        return seg_items
+    
+    def _create_segment_items(self, item: ProcessingItem) -> List[SegmentItem]:
+        """创建segment items"""
+        seg_items = []
+        
+        for i, seg_info in enumerate(item.segments):
+            seg_id = (f"seg_{item.file_id}_{i}_"
+                     f"{int(seg_info['start_time']*1000)}_"
+                     f"{int(seg_info['end_time']*1000)}")
+            
+            seg_item = SegmentItem(
+                file_id=seg_id,
+                oss_path=item.oss_path,
+                parent_file_id=item.file_id,
+                segment_index=i,
+                audio_data=item.audio_data[seg_info['start_idx']:seg_info['end_idx']],  # numpy view
+                sample_rate=item.sample_rate,
+                start_time=seg_info['start_time'],
+                end_time=seg_info['end_time'],
+                segment_duration=seg_info['duration']
+            )
+            seg_items.append(seg_item)
+        
+        return seg_items
+    
+    def _concurrent_upload(self, seg_items: List[SegmentItem]):
+        """并发上传所有segments"""
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(self._convert_single, item): i
-                for i, item in enumerate(items)
+            # 提交所有上传任务
+            future_to_seg = {
+                executor.submit(self._upload_single_segment, seg): seg
+                for seg in seg_items
             }
             
-            results = [None] * len(items)
-            for future in as_completed(futures):
-                idx = futures[future]
-                results[idx] = future.result()
-            
-            return results
+            # 收集结果
+            for future in as_completed(future_to_seg):
+                seg_item = future_to_seg[future]
+                try:
+                    seg_item.segment_oss_path = future.result()
+                    seg_item.mark_success()
+                except Exception as e:
+                    seg_item.mark_failed("upload", e)
     
-    def _convert_single(self, item: ProcessingItem) -> ProcessingItem:
-        """转换单个音频（线程安全）"""
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as input_file:
-            input_path = input_file.name
-            input_file.write(item.audio_bytes)
+    def _upload_single_segment(self, seg_item: SegmentItem) -> str:
+        """
+        上传单个segment（线程安全）
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as output_file:
-            output_path = output_file.name
+        Returns:
+            上传后的OSS路径
+        """
+        # 转为WAV bytes
+        wav_bytes = self._to_wav_bytes(seg_item.audio_data, seg_item.sample_rate)
         
-        try:
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', input_path,
-                '-ar', str(self.target_sr),
-                '-ac', str(self.target_channels),
-                '-f', 'wav',
-                '-loglevel', 'error',
-                output_path
-            ]
+        # 生成OSS路径
+        oss_path = f"{self.audio_segment_prefix}{seg_item.file_id}.wav"
+        
+        # 上传
+        self.storage.upload_bytes(wav_bytes, oss_path)
+        
+        return oss_path
+    
+    def _to_wav_bytes(self, audio_data: np.ndarray, sample_rate: int) -> bytes:
+        """将numpy数组转为WAV格式bytes"""
+        buffer = io.BytesIO()
+        
+        with wave.open(buffer, 'wb') as wav_file:
+            # 设置WAV参数
+            wav_file.setnchannels(1)  # 单声道
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(sample_rate)
             
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
-            if result.returncode != 0:
-                raise RuntimeError(f"FFmpeg error: {result.stderr.decode()}")
-            
-            waveform, sample_rate = torchaudio.load(output_path)
-            
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-            item.audio_data = waveform.squeeze(0).numpy()
-            item.sample_rate = sample_rate
-            item.duration = len(item.audio_data) / sample_rate
-            
-            item.audio_bytes = None
-            
-            return item
-            
-        finally:
-            for path in [input_path, output_path]:
-                if os.path.exists(path):
-                    os.unlink(path)
+            # 转为int16
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+        
+        buffer.seek(0)
+        return buffer.read()
