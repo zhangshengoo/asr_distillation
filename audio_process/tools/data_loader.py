@@ -1,6 +1,6 @@
 """DataLoader实现 - 支持多进程并行"""
 from torch.utils.data import Dataset, DataLoader
-from typing import Set, Dict, List
+from typing import Set, Dict, List, Tuple
 import logging
 
 
@@ -8,38 +8,15 @@ class AudioFileDataset(Dataset):
     """音频文件数据集 - worker中完成CPU预处理"""
     
     def __init__(self, 
-                 index_file: str, 
-                 config: dict,
-                 processed_ids: Set[str] = None):
+                 file_list: List[Tuple[str, str]], 
+                 config: dict):
         """
         Args:
-            index_file: 索引文件路径
+            file_list: [(file_id, oss_path), ...] 文件列表
             config: 完整配置
-            processed_ids: 已处理的file_id集合
         """
         self.config = config
-        self.processed_ids = processed_ids or set()
-        
-        # 读取索引
-        self.items = []
-        with open(index_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                parts = line.split('\t')
-                if len(parts) != 2:
-                    continue
-                
-                file_id, oss_path = parts
-                if file_id not in self.processed_ids:
-                    self.items.append({
-                        'file_id': file_id,
-                        'oss_path': oss_path
-                    })
-        
-        # 延迟初始化（在worker进程中初始化）
+        self.items = [{'file_id': fid, 'oss_path': path} for fid, path in file_list]
         self.pipeline = None
         self.worker_id = None
     
@@ -47,27 +24,22 @@ class AudioFileDataset(Dataset):
         """在worker进程中初始化Pipeline"""
         if self.pipeline is None:
             import torch
-            from ..data.storage import MediaStorageManager
+            from ..storage import MediaStorageManager
             from .pipeline import Pipeline
-            from .stages import (
-                DownloadStage,
-                AudioFormatStage,
-                CoarseVADStage,
-                SegmentSplitStage,
-                SegmentExpandAndUploadStage
-            )
+            from ..stages.download import DownloadStage
+            from ..stages.audio_format import AudioFormatStage
+            from ..stages.vad import CoarseVADStage
+            from ..stages.segment_split import SegmentSplitStage
+            from ..stages.segment_upload import SegmentExpandAndUploadStage
             
-            # 获取worker信息
             worker_info = torch.utils.data.get_worker_info()
             self.worker_id = worker_info.id if worker_info else 0
             
-            # 初始化存储管理器（每个worker独立）
             storage_manager = MediaStorageManager(
-                input_config=self.config['input_storage'],
-                output_config=self.config['output_storage']
+                input_config=self.config['data']['input_storage'],
+                output_config=self.config['data']['output_storage']
             )
             
-            # 创建Pipeline（每个worker独立加载VAD模型）
             stages = [
                 DownloadStage(storage_manager),
                 AudioFormatStage(
@@ -94,22 +66,19 @@ class AudioFileDataset(Dataset):
     def __len__(self):
         return len(self.items)
     
-    def __getitem__(self, idx) -> Dict:
+    def __getitem__(self, idx) -> List[Dict]:
         """处理单个文件，返回segments"""
         self._init_worker()
         
-        from .data_structures import ProcessingItem
+        from ..data_structures import ProcessingItem
         
         file_dict = self.items[idx]
         item = ProcessingItem(**file_dict)
         
-        # 在worker中运行Pipeline（CPU预处理+上传）
         results = []
         for seg_item in self.pipeline.process_one(item):
-            # ✅ seg_item.audio_data已经在SegmentExpandAndUploadStage中清空
-            # 只返回轻量级的metadata
             results.append({
-                'segment_item': seg_item,  # audio_data已清空，pickle时很小
+                'segment_item': seg_item,
                 'file_id': file_dict['file_id']
             })
         
@@ -132,22 +101,20 @@ def collate_fn(batch):
     }
 
 
-def create_data_loader(index_file: str,
+def create_data_loader(file_list: List[Tuple[str, str]],
                        config: dict,
-                       processed_ids: Set[str] = None,
                        num_workers: int = 8,
                        batch_size: int = 32) -> DataLoader:
     """
     创建多进程DataLoader
     
     Args:
-        index_file: 索引文件
+        file_list: [(file_id, oss_path), ...] 文件列表
         config: 完整配置
-        processed_ids: 已处理的ID
         num_workers: worker进程数（推荐4-8）
         batch_size: 批次大小（推荐32）
     """
-    dataset = AudioFileDataset(index_file, config, processed_ids)
+    dataset = AudioFileDataset(file_list, config)
     
     return DataLoader(
         dataset,
@@ -155,5 +122,5 @@ def create_data_loader(index_file: str,
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=False,
-        persistent_workers=True if num_workers > 0 else False  # ✅ 保持worker存活，避免重复初始化
+        persistent_workers=True if num_workers > 0 else False
     )

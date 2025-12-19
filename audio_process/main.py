@@ -6,7 +6,7 @@ from tqdm import tqdm
 from .data_loader import create_data_loader
 from .metadata_writer import MetadataWriter
 from .checkpoint import CheckpointManager
-from ..data.storage import MediaStorageManager
+from tools.storage import MediaStorageManager
 
 
 def setup_logging():
@@ -26,42 +26,42 @@ def main(config_file: str):
     setup_logging()
     logger = logging.getLogger(__name__)
     
-    # 加载配置
     config = load_config(config_file)
     logger.info(f"Loaded config from {config_file}")
     
-    # Storage manager
     storage_manager = MediaStorageManager(
-        input_config=config['input_storage'],
-        output_config=config['output_storage']
+        input_config=config['data']['input_storage'],
+        output_config=config['data']['output_storage']
     )
     
-    # Checkpoint管理
+    logger.info("Fetching file list from OSS...")
+    file_list = storage_manager.list_audio_files()
+    logger.info(f"Found {len(file_list)} files")
+    
     checkpoint_mgr = CheckpointManager(
         config['monitoring']['checkpoint_dir'] + '/preprocessing_checkpoint.json'
     )
     processed_ids = checkpoint_mgr.load_processed_ids()
     logger.info(f"Loaded {len(processed_ids)} processed file IDs")
     
-    # 创建多进程DataLoader
+    unprocessed_files = [(fid, path) for fid, path in file_list if fid not in processed_ids]
+    logger.info(f"{len(unprocessed_files)} files to process")
+    
     num_workers = config.get('pipeline', {}).get('num_cpu_workers', 8)
     data_loader = create_data_loader(
-        config['data']['index_path'],
+        file_list=unprocessed_files,
         config=config,
-        processed_ids=processed_ids,
         num_workers=num_workers,
         batch_size=1
     )
     logger.info(f"Created data loader with {num_workers} workers")
     
-    # Metadata writer
     meta_writer = MetadataWriter(
         storage_manager,
         metadata_prefix=config['segment_upload']['metadata_prefix'],
         local_buffer_size=config['segment_upload'].get('segment_metadata_batch_size', 1000)
     )
     
-    # 处理
     stats = {'success': 0, 'failed': 0, 'processed_files': 0}
     
     try:
@@ -69,7 +69,6 @@ def main(config_file: str):
             segments = batch_dict['segments']
             file_ids = batch_dict['processed_file_ids']
             
-            # 写metadata
             for seg_item in segments:
                 meta_writer.write(seg_item.to_meta_dict())
                 
@@ -78,17 +77,14 @@ def main(config_file: str):
                 else:
                     stats['failed'] += 1
             
-            # ✅ 同步更新checkpoint
             processed_ids.update(file_ids)
             stats['processed_files'] += len(file_ids)
             
-            # 每100个文件保存一次
             if stats['processed_files'] % 100 == 0:
                 checkpoint_mgr.save_processed_ids(processed_ids)
                 logger.info(f"Checkpoint saved: {stats['processed_files']} files processed")
     
     finally:
-        # 最终保存
         checkpoint_mgr.save_processed_ids(processed_ids)
         meta_writer.close()
         

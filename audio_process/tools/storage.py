@@ -1,21 +1,15 @@
 """OSS存储管理器"""
 import logging
 import oss2
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Tuple
 
 
 class MediaStorageManager:
     """媒体存储管理器，支持输入和输出分离"""
     
     def __init__(self, input_config: Dict[str, Any], output_config: Dict[str, Any]):
-        """
-        Args:
-            input_config: 输入存储配置
-            output_config: 输出存储配置
-        """
         self.logger = logging.getLogger(__name__)
         
-        # 输入存储配置
         self.input_config = input_config
         self.input_auth = oss2.Auth(
             input_config['access_key_id'],
@@ -27,7 +21,6 @@ class MediaStorageManager:
             input_config['bucket']
         )
         
-        # 输出存储配置
         self.output_config = output_config
         self.output_auth = oss2.Auth(
             output_config['access_key_id'],
@@ -38,6 +31,29 @@ class MediaStorageManager:
             output_config['endpoint'],
             output_config['bucket']
         )
+    
+    def list_audio_files(self, prefixes: List[str] = None, extensions: tuple = None) -> List[Tuple[str, str]]:
+        """列出输入bucket中的多媒体文件"""
+        if prefixes is None:
+            prefixes = [
+                self.input_config.get('audio_prefix', 'audio/'),
+                self.input_config.get('video_prefix', 'video/')
+            ]
+        
+        if extensions is None:
+            extensions = (
+                '.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.wma',
+                '.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm'
+            )
+        
+        files = []
+        for prefix in prefixes:
+            for obj in oss2.ObjectIterator(self.input_bucket, prefix=prefix):
+                if obj.key.lower().endswith(extensions):
+                    file_id = obj.key.split('/')[-1].rsplit('.', 1)[0]
+                    files.append((file_id, obj.key))
+        
+        return files
     
     def download_audio(self, oss_path: str, local_path: str) -> bool:
         """从输入存储下载音频"""
@@ -60,16 +76,11 @@ class MediaStorageManager:
     def append_bytes(self, data: bytes, oss_path: str) -> bool:
         """追加数据到OSS文件（如果文件存在则追加，否则创建）"""
         try:
-            # 检查文件是否存在
             if self.output_bucket.object_exists(oss_path):
-                # 下载现有文件
                 existing_data = self.output_bucket.get_object(oss_path).read()
-                # 合并数据
                 merged_data = existing_data + data
-                # 上传合并后的数据
                 self.output_bucket.put_object(oss_path, merged_data)
             else:
-                # 文件不存在，直接上传
                 self.output_bucket.put_object(oss_path, data)
             
             return True
