@@ -24,45 +24,55 @@ class AudioFormatStage(Stage):
     
     def process(self, item: ProcessingItem) -> ProcessingItem:
         """转换音频格式"""
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as input_file:
-            input_path = input_file.name
-            input_file.write(item.audio_bytes)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as output_file:
-            output_path = output_file.name
+        if item.status == "failed":
+            return item
         
         try:
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', input_path,
-                '-ar', str(self.target_sr),
-                '-ac', str(self.target_channels),
-                '-f', 'wav',
-                '-loglevel', 'error',
-                output_path
-            ]
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as input_file:
+                input_path = input_file.name
+                input_file.write(item.audio_bytes)
             
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
-            if result.returncode != 0:
-                raise RuntimeError(f"FFmpeg error: {result.stderr.decode()}")
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as output_file:
+                output_path = output_file.name
             
-            waveform, sample_rate = torchaudio.load(output_path)
-            
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-            item.audio_data = waveform.squeeze(0).numpy()
-            item.sample_rate = sample_rate
-            item.duration = len(item.audio_data) / sample_rate
-            
+            try:
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', input_path,
+                    '-ar', str(self.target_sr),
+                    '-ac', str(self.target_channels),
+                    '-f', 'wav',
+                    '-loglevel', 'error',
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, timeout=300)
+                if result.returncode != 0:
+                    raise RuntimeError(f"FFmpeg error: {result.stderr.decode()}")
+                
+                waveform, sample_rate = torchaudio.load(output_path)
+                
+                if waveform.shape[0] > 1:
+                    waveform = torch.mean(waveform, dim=0, keepdim=True)
+                
+                item.audio_data = waveform.squeeze(0).numpy()
+                item.sample_rate = sample_rate
+                item.duration = len(item.audio_data) / sample_rate
+                
+                item.audio_bytes = None
+                item.mark_success()
+                return item
+                
+            finally:
+                for path in [input_path, output_path]:
+                    if os.path.exists(path):
+                        os.unlink(path)
+                        
+        except Exception as e:
+            item.mark_failed(self.name(), e)
             item.audio_bytes = None
-            
+            item.audio_data = None
             return item
-            
-        finally:
-            for path in [input_path, output_path]:
-                if os.path.exists(path):
-                    os.unlink(path)
     
     def process_batch(self, items: List[ProcessingItem]) -> List[ProcessingItem]:
         """并行转换批次样本"""
@@ -84,42 +94,52 @@ class AudioFormatStage(Stage):
     
     def _convert_single(self, item: ProcessingItem) -> ProcessingItem:
         """转换单个音频（线程安全）"""
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as input_file:
-            input_path = input_file.name
-            input_file.write(item.audio_bytes)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as output_file:
-            output_path = output_file.name
+        if item.status == "failed":
+            return item
         
         try:
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', input_path,
-                '-ar', str(self.target_sr),
-                '-ac', str(self.target_channels),
-                '-f', 'wav',
-                '-loglevel', 'error',
-                output_path
-            ]
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as input_file:
+                input_path = input_file.name
+                input_file.write(item.audio_bytes)
             
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
-            if result.returncode != 0:
-                raise RuntimeError(f"FFmpeg error: {result.stderr.decode()}")
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as output_file:
+                output_path = output_file.name
             
-            waveform, sample_rate = torchaudio.load(output_path)
-            
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-            item.audio_data = waveform.squeeze(0).numpy()
-            item.sample_rate = sample_rate
-            item.duration = len(item.audio_data) / sample_rate
-            
+            try:
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', input_path,
+                    '-ar', str(self.target_sr),
+                    '-ac', str(self.target_channels),
+                    '-f', 'wav',
+                    '-loglevel', 'error',
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, timeout=300)
+                if result.returncode != 0:
+                    raise RuntimeError(f"FFmpeg error: {result.stderr.decode()}")
+                
+                waveform, sample_rate = torchaudio.load(output_path)
+                
+                if waveform.shape[0] > 1:
+                    waveform = torch.mean(waveform, dim=0, keepdim=True)
+                
+                item.audio_data = waveform.squeeze(0).numpy()
+                item.sample_rate = sample_rate
+                item.duration = len(item.audio_data) / sample_rate
+                
+                item.audio_bytes = None
+                item.mark_success()
+                return item
+                
+            finally:
+                for path in [input_path, output_path]:
+                    if os.path.exists(path):
+                        os.unlink(path)
+                        
+        except Exception as e:
+            item.mark_failed(self.name(), e)
             item.audio_bytes = None
-            
+            item.audio_data = None
             return item
-            
-        finally:
-            for path in [input_path, output_path]:
-                if os.path.exists(path):
-                    os.unlink(path)
